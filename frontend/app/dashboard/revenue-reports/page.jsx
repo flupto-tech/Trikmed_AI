@@ -1,0 +1,4 @@
+'use client'
+import dynamic from 'next/dynamic'
+const Page = dynamic(() => import('../../../src/screens/dashboard/RevenueReports'), { ssr: false })
+export default Page

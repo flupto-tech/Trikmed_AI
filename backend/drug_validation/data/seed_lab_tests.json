@@ -1,0 +1,598 @@
+[
+  {
+    "test_name": "CBC (Complete Blood Count)",
+    "category": "Hematology",
+    "specimen": "EDTA Whole Blood",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "blood count",
+      "cbc",
+      "cbc (complete blood count)",
+      "cbc lab test",
+      "cbc lap test",
+      "complete blood count",
+      "hb cbc",
+      "hemogram",
+      "khoon ki jaanch",
+      "platelet count",
+      "seedhi si",
+      "sidhi si",
+      "tlc dlc"
+    ]
+  },
+  {
+    "test_name": "Lipid Profile",
+    "category": "Biochemistry",
+    "specimen": "Serum",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": true,
+    "common_aliases": [
+      "cholesterol",
+      "cholesterol panel",
+      "cholesterol test",
+      "fat test",
+      "lipid jaanch",
+      "lipid panel",
+      "lipid profile",
+      "lipid test",
+      "serum lipid",
+      "triglycerides"
+    ]
+  },
+  {
+    "test_name": "Liver Function Test (LFT)",
+    "category": "Biochemistry",
+    "specimen": "Serum",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "bilirubin test",
+      "jigar ki jaanch",
+      "lft",
+      "lft test",
+      "liver function",
+      "liver function test",
+      "liver function test (lft)",
+      "liver panel",
+      "liver profile",
+      "sgot sgpt"
+    ]
+  },
+  {
+    "test_name": "Kidney Function Test (KFT)",
+    "category": "Biochemistry",
+    "specimen": "Serum",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "blood urea",
+      "bun",
+      "gurde ki jaanch",
+      "kft",
+      "kidney function",
+      "kidney function test",
+      "kidney function test (kft)",
+      "kidney panel",
+      "renal function test",
+      "rft",
+      "rft test",
+      "serum creatinine"
+    ]
+  },
+  {
+    "test_name": "Blood Sugar Fasting",
+    "category": "Diabetology",
+    "specimen": "Fluoride Plasma",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": true,
+    "common_aliases": [
+      "blood sugar fasting",
+      "fasting blood sugar",
+      "fasting sugar",
+      "fbs",
+      "khali pet sugar",
+      "subah ki sugar",
+      "sugar fasting"
+    ]
+  },
+  {
+    "test_name": "Blood Sugar PP (Post Prandial)",
+    "category": "Diabetology",
+    "specimen": "Fluoride Plasma",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "after food sugar",
+      "blood sugar pp",
+      "blood sugar pp (post prandial)",
+      "khana khane ke baad sugar",
+      "post prandial blood sugar",
+      "post prandial sugar",
+      "pp sugar",
+      "ppbs",
+      "sugar pp"
+    ]
+  },
+  {
+    "test_name": "Random Blood Sugar (RBS)",
+    "category": "Diabetology",
+    "specimen": "Fluoride Plasma",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "blood sugar",
+      "random blood sugar",
+      "random blood sugar (rbs)",
+      "random sugar",
+      "rbs",
+      "rbs test",
+      "sugar test"
+    ]
+  },
+  {
+    "test_name": "HbA1c (Glycated Hemoglobin)",
+    "category": "Diabetology",
+    "specimen": "EDTA Whole Blood",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "3 month sugar",
+      "a1c test",
+      "glycated hemoglobin",
+      "hb a1c",
+      "hba1c",
+      "hba1c (glycated hemoglobin)",
+      "sugar average",
+      "three month sugar"
+    ]
+  },
+  {
+    "test_name": "Thyroid Profile (TSH, T3, T4)",
+    "category": "Endocrinology",
+    "specimen": "Serum",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "free t3 free t4",
+      "t3 t4 tsh",
+      "tft",
+      "thyroid function test",
+      "thyroid jaanch",
+      "thyroid profile",
+      "thyroid profile (tsh, t3, t4)",
+      "thyroid test",
+      "tsh"
+    ]
+  },
+  {
+    "test_name": "Urine Routine & Microscopy (R/M)",
+    "category": "Pathology",
+    "specimen": "Urine",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "peshab ki jaanch",
+      "peshab test",
+      "urine examination",
+      "urine microscopy",
+      "urine r/m",
+      "urine rm",
+      "urine routine",
+      "urine routine & microscopy (r/m)",
+      "urine test"
+    ]
+  },
+  {
+    "test_name": "Urine Culture & Sensitivity",
+    "category": "Microbiology",
+    "specimen": "Midstream Urine",
+    "turnaround_time": "48 Hours",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "urine c/s",
+      "urine culture",
+      "urine culture & sensitivity",
+      "urine culture test",
+      "urine sensitivity"
+    ]
+  },
+  {
+    "test_name": "Serum Ferritin",
+    "category": "Hematology",
+    "specimen": "Serum",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "ferritin",
+      "ferritin test",
+      "iron store",
+      "serum ferritin"
+    ]
+  },
+  {
+    "test_name": "Serum Iron & TIBC",
+    "category": "Hematology",
+    "specimen": "Serum",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": true,
+    "common_aliases": [
+      "iron profile",
+      "serum iron",
+      "serum iron & tibc",
+      "tibc",
+      "total iron binding capacity"
+    ]
+  },
+  {
+    "test_name": "Vitamin D3 (25-Hydroxy)",
+    "category": "Biochemistry",
+    "specimen": "Serum",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "25 oh vitamin d",
+      "25-oh vitamin d",
+      "25oh vitamin d",
+      "d3 test",
+      "vit d",
+      "vit d3",
+      "vitamin d",
+      "vitamin d3",
+      "vitamin d3 (25 hydroxy)",
+      "vitamin d3 (25-hydroxy)",
+      "vitamin d3 (25hydroxy)"
+    ]
+  },
+  {
+    "test_name": "Vitamin B12",
+    "category": "Biochemistry",
+    "specimen": "Serum",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "b12 test",
+      "cyanocobalamin",
+      "vit b12",
+      "vitamin b12"
+    ]
+  },
+  {
+    "test_name": "Serum Calcium",
+    "category": "Biochemistry",
+    "specimen": "Serum",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "calcium test",
+      "ionized calcium",
+      "serum calcium",
+      "total calcium"
+    ]
+  },
+  {
+    "test_name": "Serum Electrolytes (Na+, K+, Cl-)",
+    "category": "Biochemistry",
+    "specimen": "Serum",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "electrolyte panel",
+      "electrolytes test",
+      "na k cl",
+      "serum electrolytes",
+      "serum electrolytes (na+, k+, cl )",
+      "serum electrolytes (na+, k+, cl)",
+      "serum electrolytes (na+, k+, cl-)",
+      "sodium potassium"
+    ]
+  },
+  {
+    "test_name": "Serum Uric Acid",
+    "category": "Biochemistry",
+    "specimen": "Serum",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "gout test",
+      "serum uric acid",
+      "uric acid"
+    ]
+  },
+  {
+    "test_name": "CRP (C-Reactive Protein)",
+    "category": "Serology",
+    "specimen": "Serum",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "c reactive protein",
+      "c-reactive protein",
+      "creactive protein",
+      "crp",
+      "crp (c reactive protein)",
+      "crp (c-reactive protein)",
+      "crp (creactive protein)",
+      "crp test",
+      "hs crp",
+      "hs-crp",
+      "hscrp",
+      "quantitative crp"
+    ]
+  },
+  {
+    "test_name": "ESR (Erythrocyte Sedimentation Rate)",
+    "category": "Hematology",
+    "specimen": "EDTA Whole Blood",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "erythrocyte sedimentation rate",
+      "esr",
+      "esr (erythrocyte sedimentation rate)",
+      "esr test"
+    ]
+  },
+  {
+    "test_name": "Dengue NS1 Antigen + IgM/IgG",
+    "category": "Serology",
+    "specimen": "Serum",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "dengue antigen",
+      "dengue igm",
+      "dengue ns1",
+      "dengue ns1 antigen + igm/igg",
+      "dengue profile",
+      "dengue serology",
+      "dengue test"
+    ]
+  },
+  {
+    "test_name": "Typhoid Widal Test",
+    "category": "Serology",
+    "specimen": "Serum",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "moti jhala test",
+      "typhidot",
+      "typhoid test",
+      "typhoid widal test",
+      "widal",
+      "widal test"
+    ]
+  },
+  {
+    "test_name": "Malaria Antigen (Dual / Pv + Pf)",
+    "category": "Parasitology",
+    "specimen": "EDTA Whole Blood",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "malaria antigen",
+      "malaria antigen (dual / pv + pf)",
+      "malaria card",
+      "malaria test",
+      "mp test",
+      "smear for mp"
+    ]
+  },
+  {
+    "test_name": "D-Dimer",
+    "category": "Coagulation",
+    "specimen": "Citrated Plasma",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "d dimer",
+      "d dimer test",
+      "d-dimer",
+      "d-dimer test",
+      "ddimer",
+      "ddimer test"
+    ]
+  },
+  {
+    "test_name": "Troponin I / T",
+    "category": "Cardiac Markers",
+    "specimen": "Serum",
+    "turnaround_time": "STAT / 1 Hour",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "cardiac enzymes",
+      "cardiac troponin",
+      "heart attack test",
+      "trop i",
+      "trop t",
+      "troponin",
+      "troponin i / t"
+    ]
+  },
+  {
+    "test_name": "PT / INR (Prothrombin Time)",
+    "category": "Coagulation",
+    "specimen": "Citrated Plasma",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "inr test",
+      "prothrombin time",
+      "pt / inr (prothrombin time)",
+      "pt inr"
+    ]
+  },
+  {
+    "test_name": "Stool Routine & Occult Blood",
+    "category": "Pathology",
+    "specimen": "Stool",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "latrine test",
+      "stool occult blood",
+      "stool r/e",
+      "stool routine",
+      "stool routine & occult blood",
+      "stool test"
+    ]
+  },
+  {
+    "test_name": "ECG (Electrocardiogram)",
+    "category": "Cardiology / Diagnostics",
+    "specimen": "Non-invasive",
+    "turnaround_time": "Immediate",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "dil ki jaanch",
+      "ecg",
+      "ecg (electrocardiogram)",
+      "ekg",
+      "electrocardiogram",
+      "heart tracing"
+    ]
+  },
+  {
+    "test_name": "2D Echocardiogram (ECHO)",
+    "category": "Cardiology / Diagnostics",
+    "specimen": "Ultrasound",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "2d echo",
+      "2d echocardiogram (echo)",
+      "2d echocardiography",
+      "echo",
+      "echocardiogram"
+    ]
+  },
+  {
+    "test_name": "Chest X-Ray (PA View)",
+    "category": "Radiology",
+    "specimen": "Imaging",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "chest x ray",
+      "chest x ray (pa view)",
+      "chest x-ray",
+      "chest x-ray (pa view)",
+      "chest xray",
+      "chest xray (pa view)",
+      "chhati ka photo",
+      "chhati ka x ray",
+      "chhati ka x-ray",
+      "chhati ka xray",
+      "chhati x ray",
+      "chhati x-ray",
+      "chhati xray",
+      "cxr",
+      "seene ka photo",
+      "seene ka x ray",
+      "seene ka x-ray",
+      "seene ka xray",
+      "x ray",
+      "x ray chest",
+      "x-ray",
+      "x-ray chest",
+      "xray",
+      "xray chest"
+    ]
+  },
+  {
+    "test_name": "Ultrasound Abdomen & Pelvis (USG)",
+    "category": "Radiology",
+    "specimen": "Ultrasound",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": true,
+    "common_aliases": [
+      "pet ka scan",
+      "pet ka ultrasound",
+      "pet ki sonography",
+      "sonography",
+      "ultrasound",
+      "ultrasound abdomen",
+      "ultrasound abdomen & pelvis (usg)",
+      "ultrasound whole abdomen",
+      "usg",
+      "usg abdomen",
+      "usg abdomen & pelvis",
+      "usg pelvis"
+    ]
+  },
+  {
+    "test_name": "CT Scan Head / Brain",
+    "category": "Radiology",
+    "specimen": "CT",
+    "turnaround_time": "Same Day",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "ct brain",
+      "ct head",
+      "ct scan brain",
+      "ct scan head / brain",
+      "head ct"
+    ]
+  },
+  {
+    "test_name": "MRI Brain",
+    "category": "Radiology",
+    "specimen": "MRI",
+    "turnaround_time": "24 Hours",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "brain mri",
+      "mri brain",
+      "mri head",
+      "mri scan",
+      "mri",
+      "mri scan karana",
+      "mri karana",
+      "mri karwana",
+      "magnetic resonance imaging"
+    ]
+  },
+  {
+    "test_name": "Mantoux Test (Tuberculin Skin Test)",
+    "category": "Infectious Disease",
+    "specimen": "Intradermal Injection",
+    "turnaround_time": "48-72 Hours",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "mantoux",
+      "mantoux test",
+      "mantoux test (tuberculin skin test)",
+      "tb skin test",
+      "tst"
+    ]
+  },
+  {
+    "test_name": "Sputum for AFB",
+    "category": "Microbiology",
+    "specimen": "Early Morning Sputum",
+    "turnaround_time": "24 Hours",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "balgham ki jaanch",
+      "sputum afb",
+      "sputum for afb",
+      "tb sputum test"
+    ]
+  },
+  {
+    "test_name": "MRI Scan",
+    "category": "Radiology",
+    "specimen": "MRI",
+    "turnaround_time": "24 Hours",
+    "is_fasting_required": false,
+    "common_aliases": [
+      "mri scan",
+      "mri",
+      "mri karana",
+      "mri karwana",
+      "magnetic resonance imaging",
+      "mri scan karana"
+    ]
+  }
+]

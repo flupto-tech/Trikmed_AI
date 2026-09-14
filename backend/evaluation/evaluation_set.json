@@ -1,0 +1,246 @@
+[
+  {
+    "id": "eval_001",
+    "title": "Acute URI with Fever and Throat Pain (Hinglish)",
+    "audio_transcript_raw": "Patient Ramesh Kumar 35 saal ka hai. 3 din se bukhar aur gale me dard hai. Examination me pharyngitis lag raha hai. Write down Dolo 650mg subah shaam khane ke baad for 3 days. Augmentin 625mg ek subah ek raat khane ke baad for 5 days. Cetirizine 10mg raat ko for 5 days. Warm saline gargles aur rest advice karo. 5 din baad follow up.",
+    "expected_deidentified": "Patient [PATIENT_NAME] age band 30-40. 3 din se bukhar aur gale me dard hai. Examination me pharyngitis lag raha hai. Write down Dolo 650mg subah shaam khane ke baad for 3 days. Augmentin 625mg ek subah ek raat khane ke baad for 5 days. Cetirizine 10mg raat ko for 5 days. Warm saline gargles aur rest advice karo. 5 din baad follow up.",
+    "expected_structured": {
+      "patient_name": "Ramesh Kumar",
+      "age": 35,
+      "symptoms": [
+        "Fever for 3 days",
+        "Throat pain"
+      ],
+      "diagnosis": "Acute Pharyngitis",
+      "medicines": [
+        {
+          "name": "Dolo 650",
+          "dose": "650mg",
+          "frequency": "1-0-1",
+          "duration": "3 days",
+          "morning": true,
+          "afternoon": false,
+          "night": true,
+          "after_food": true
+        },
+        {
+          "name": "Augmentin 625",
+          "dose": "625mg",
+          "frequency": "1-0-1",
+          "duration": "5 days",
+          "morning": true,
+          "afternoon": false,
+          "night": true,
+          "after_food": true
+        },
+        {
+          "name": "Cetzine 10",
+          "dose": "10mg",
+          "frequency": "0-0-1",
+          "duration": "5 days",
+          "morning": false,
+          "afternoon": false,
+          "night": true,
+          "after_food": true
+        }
+      ],
+      "investigations": [],
+      "follow_up": "5 days",
+      "notes": "Warm saline gargles, adequate rest",
+      "confidence": 0.95
+    }
+  },
+  {
+    "id": "eval_002",
+    "title": "GERD and Acid Peptic Disease (Hindi/English mix)",
+    "audio_transcript_raw": "Sunita Devi, 42 years old female. Severe acidity, burning sensation chest me aur pet me dard. Diagnosis is GERD with Gastritis. Give Pantocid 40mg daily morning empty stomach for 14 days. Emeset 4mg subah raat khana khane se aadha ghanta pehle for 3 days. Avoid spicy and oily food. Follow up after 2 weeks if symptoms persist.",
+    "expected_deidentified": "Female patient, age band 40-50. Severe acidity, burning sensation chest me aur pet me dard. Diagnosis is GERD with Gastritis. Give Pantocid 40mg daily morning empty stomach for 14 days. Emeset 4mg subah raat khana khane se aadha ghanta pehle for 3 days. Avoid spicy and oily food. Follow up after 2 weeks if symptoms persist.",
+    "expected_structured": {
+      "patient_name": "Sunita Devi",
+      "age": 42,
+      "symptoms": [
+        "Acidity",
+        "Chest burning sensation",
+        "Abdominal pain"
+      ],
+      "diagnosis": "GERD with Gastritis",
+      "medicines": [
+        {
+          "name": "Pantocid 40",
+          "dose": "40mg",
+          "frequency": "1-0-0",
+          "duration": "14 days",
+          "morning": true,
+          "afternoon": false,
+          "night": false,
+          "after_food": false
+        },
+        {
+          "name": "Emeset 4",
+          "dose": "4mg",
+          "frequency": "1-0-1",
+          "duration": "3 days",
+          "morning": true,
+          "afternoon": false,
+          "night": true,
+          "after_food": false
+        }
+      ],
+      "investigations": [],
+      "follow_up": "2 weeks",
+      "notes": "Avoid spicy and oily food",
+      "confidence": 0.96
+    }
+  },
+  {
+    "id": "eval_003",
+    "title": "Type 2 Diabetes & Hypertension Routine Refill",
+    "audio_transcript_raw": "Doctor Sharma prescribing for Mr. Anil Verma age 58. Fasting sugar 160, BP 145/92. Known case of Type 2 DM and HTN. Continue Glycomet 500 morning evening after meals for 30 days. Telma 40 once daily after breakfast for 30 days. Ecosprin 75 after lunch for 30 days. Advise Fasting and PP blood sugar and HbA1c test next week.",
+    "expected_deidentified": "Prescribing for patient age band 55-65. Fasting sugar 160, BP 145/92. Known case of Type 2 DM and HTN. Continue Glycomet 500 morning evening after meals for 30 days. Telma 40 once daily after breakfast for 30 days. Ecosprin 75 after lunch for 30 days. Advise Fasting and PP blood sugar and HbA1c test next week.",
+    "expected_structured": {
+      "patient_name": "Anil Verma",
+      "age": 58,
+      "symptoms": [
+        "High blood sugar check",
+        "Elevated BP reading"
+      ],
+      "diagnosis": "Type 2 Diabetes Mellitus with Essential Hypertension",
+      "medicines": [
+        {
+          "name": "Glycomet 500",
+          "dose": "500mg",
+          "frequency": "1-0-1",
+          "duration": "30 days",
+          "morning": true,
+          "afternoon": false,
+          "night": true,
+          "after_food": true
+        },
+        {
+          "name": "Telma 40",
+          "dose": "40mg",
+          "frequency": "1-0-0",
+          "duration": "30 days",
+          "morning": true,
+          "afternoon": false,
+          "night": false,
+          "after_food": true
+        },
+        {
+          "name": "Ecosprin 75",
+          "dose": "75mg",
+          "frequency": "0-1-0",
+          "duration": "30 days",
+          "morning": false,
+          "afternoon": true,
+          "night": false,
+          "after_food": true
+        }
+      ],
+      "investigations": [
+        "Fasting Blood Sugar",
+        "PP Blood Sugar",
+        "HbA1c"
+      ],
+      "follow_up": "1 week with reports",
+      "notes": "Diabetic diet and regular morning walk",
+      "confidence": 0.98
+    }
+  },
+  {
+    "id": "eval_004",
+    "title": "Allergic Rhinitis and Dry Cough",
+    "audio_transcript_raw": "Pooja, 24 years old. 1 week se chheenk aana, naak behna aur sookhi khansi. Allergic Rhinitis with Bronchospasm. Montair LC one tablet at bedtime for 7 days. Ascoril LS syrup 2 teaspoons three times daily after food for 5 days. Steam inhalation twice daily. Review after 1 week.",
+    "expected_deidentified": "Patient age band 20-30. 1 week se chheenk aana, naak behna aur sookhi khansi. Allergic Rhinitis with Bronchospasm. Montair LC one tablet at bedtime for 7 days. Ascoril LS syrup 2 teaspoons three times daily after food for 5 days. Steam inhalation twice daily. Review after 1 week.",
+    "expected_structured": {
+      "patient_name": "Pooja",
+      "age": 24,
+      "symptoms": [
+        "Sneezing for 1 week",
+        "Runny nose",
+        "Dry cough"
+      ],
+      "diagnosis": "Allergic Rhinitis with Bronchospasm",
+      "medicines": [
+        {
+          "name": "Montair LC",
+          "dose": "10mg+5mg",
+          "frequency": "0-0-1",
+          "duration": "7 days",
+          "morning": false,
+          "afternoon": false,
+          "night": true,
+          "after_food": true
+        },
+        {
+          "name": "Ascoril LS",
+          "dose": "10ml",
+          "frequency": "1-1-1",
+          "duration": "5 days",
+          "morning": true,
+          "afternoon": true,
+          "night": true,
+          "after_food": true
+        }
+      ],
+      "investigations": [],
+      "follow_up": "1 week",
+      "notes": "Steam inhalation twice daily, avoid cold drinks",
+      "confidence": 0.95
+    }
+  },
+  {
+    "id": "eval_005",
+    "title": "Acute Gastroenteritis / Diarrhea with Dehydration",
+    "audio_transcript_raw": "Vikram Singh, 29 year male. Dast aur ulti ho rahi hai subah se, 5 episodes of loose motions with mild abdominal cramps. Acute Gastroenteritis. Start Cifran 500 morning and night for 5 days after food. Sporlac tablet subah shaam for 5 days. ORS 1 packet in 1 liter water sip by sip. Pan D one capsule before food for 5 days. Return if vomiting does not stop.",
+    "expected_deidentified": "Male patient age band 25-35. Dast aur ulti ho rahi hai subah se, 5 episodes of loose motions with mild abdominal cramps. Acute Gastroenteritis. Start Cifran 500 morning and night for 5 days after food. Sporlac tablet subah shaam for 5 days. ORS 1 packet in 1 liter water sip by sip. Pan D one capsule before food for 5 days. Return if vomiting does not stop.",
+    "expected_structured": {
+      "patient_name": "Vikram Singh",
+      "age": 29,
+      "symptoms": [
+        "Loose stools 5 episodes",
+        "Vomiting",
+        "Abdominal cramps"
+      ],
+      "diagnosis": "Acute Gastroenteritis",
+      "medicines": [
+        {
+          "name": "Cifran 500",
+          "dose": "500mg",
+          "frequency": "1-0-1",
+          "duration": "5 days",
+          "morning": true,
+          "afternoon": false,
+          "night": true,
+          "after_food": true
+        },
+        {
+          "name": "Sporlac",
+          "dose": "150 M Spores",
+          "frequency": "1-0-1",
+          "duration": "5 days",
+          "morning": true,
+          "afternoon": false,
+          "night": true,
+          "after_food": true
+        },
+        {
+          "name": "Pan D",
+          "dose": "40mg+30mg",
+          "frequency": "1-0-0",
+          "duration": "5 days",
+          "morning": true,
+          "afternoon": false,
+          "night": false,
+          "after_food": false
+        }
+      ],
+      "investigations": [
+        "Stool Routine and Microscopy (if no relief in 48h)"
+      ],
+      "follow_up": "3 days or SOS if dehydration increases",
+      "notes": "ORS 1 liter throughout day, light khichdi diet",
+      "confidence": 0.97
+    }
+  }
+]
