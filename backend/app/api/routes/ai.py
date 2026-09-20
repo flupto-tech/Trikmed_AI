@@ -34,17 +34,17 @@ class MedicineItemSchema(BaseModel):
 class StructuredPrescriptionSchema(BaseModel):
     patient_name: str = ""
     age: int = 0
-    symptoms: list[str] = Field(default_factory=list)
+    symptoms: list[str] | None = Field(default_factory=list)
     diagnosis: str = ""
     medicines: list[MedicineItemSchema] = Field(default_factory=list)
-    investigations: list[Any] = Field(default_factory=list)
-    instruction_tags: list[str] = Field(default_factory=list)
-    advice: list[str] = Field(default_factory=list)
-    follow_up: list[str] | str = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
+    investigations: list[Any] | None = Field(default_factory=list)
+    instruction_tags: list[str] | None = Field(default_factory=list)
+    advice: list[str] | None = Field(default_factory=list)
+    follow_up: list[str] | str | None = Field(default_factory=list)
+    warnings: list[str] | None = Field(default_factory=list)
     raw_transcript: str = ""
     normalized_transcript: str = ""
-    extraction_warnings: list[str] = Field(default_factory=list)
+    extraction_warnings: list[str] | None = Field(default_factory=list)
     notes: str = ""
     confidence: float = 1.0
 
