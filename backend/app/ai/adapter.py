@@ -172,8 +172,7 @@ class GeminiLLMClient:
             return LocalStubLLMClient().complete(system, user, schema)
 
         models_to_try = [
-            os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-            "gemini-2.5-flash",
+            os.getenv("GEMINI_MODEL", "gemini-flash-latest"),
             "gemini-flash-latest",
             "gemini-3.8-flash",
             "gemini-3.1-flash-lite",
@@ -199,6 +198,11 @@ class GeminiLLMClient:
                         res_data = resp.json()
                         raw_text = res_data["candidates"][0]["content"]["parts"][0]["text"]
                         parsed_json = json.loads(raw_text)
+                        # Sanitize null list fields — Gemini sometimes returns null instead of []
+                        list_fields = ["symptoms","medicines","investigations","instruction_tags","advice","warnings","extraction_warnings","follow_up"]
+                        for field in list_fields:
+                            if parsed_json.get(field) is None:
+                                parsed_json[field] = []
                         return schema.model_validate(parsed_json)
                     print(f"[GeminiLLMClient] Model {model_name} returned {resp.status_code}: {resp.text[:120]}")
             except Exception as e:

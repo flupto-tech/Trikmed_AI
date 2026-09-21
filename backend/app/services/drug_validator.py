@@ -103,11 +103,23 @@ class DrugValidator:
             (r"\b(taxim\s*o)\b", "Taxim-O"),
             (r"\b(ascoril\s*d)\b", "Ascoril-D"),
             (r"\b(livo\s*thyroxin|levo\s*thyroxin[e]?|livo\s*thyroxine|levothyroxin[e]?)\b", "Levothyroxine"),
+            # Common phonetic/ASR variants for Indian brands
+            (r"\b(paci\s*mol|pacimole|paci\s*mole)\b", "Pacimol"),
+            (r"\b(cal\s*pol|kalpol)\b", "Calpol"),
+            (r"\b(azith\s*ral|azitral|azithrol)\b", "Azithral"),
+            (r"\b(combi\s*flam|combiflame)\b", "Combiflam"),
+            (r"\b(beco\s*sules|bicosules)\b", "Becosules"),
+            (r"\b(shelcal|shel\s*cal)\b", "Shelcal 500"),
+            (r"\b(supra\s*dyn|supradyne)\b", "Supradyn"),
+            (r"\b(eco\s*sprin)\b", "Ecosprin 75"),
+            (r"\b(clavam|clavum)\b", "Clavam 625"),
+            (r"\b(limcee|lim\s*cee)\b", "Limcee"),
+            (r"\b(neurobion|neuro\s*bion)\b", "Neurobion Forte"),
         ]:
             normalized_query = re.sub(alias_pattern, replacement, normalized_query, flags=re.IGNORECASE)
 
-        # 1. Fuzzy Brand Match (High Priority)
-        candidates_to_score = [normalized_query] if normalized_query != cleaned else [cleaned]
+        # Build candidate queries: original, title-cased version (handles lowercase ASR output)
+        candidates_to_score = list({cleaned, normalized_query, cleaned.title(), normalized_query.title()})
         best_match_name = None
         highest_score = 0.0
 

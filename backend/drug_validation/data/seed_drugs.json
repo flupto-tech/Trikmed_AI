@@ -10558,5 +10558,54 @@
     "atc_code": "R06AE07",
     "atc_category": "R06A - Antihistamines for systemic use",
     "search_document": "Zyrtec 10 Cetirizine Antihistamine 10mg"
+  },
+  {
+    "brand_name": "Pacimol",
+    "generic_name": "Paracetamol",
+    "strength": "500mg",
+    "form": "Tablet",
+    "category": "Analgesic"
+  },
+  {
+    "brand_name": "Pacimol",
+    "generic_name": "Paracetamol",
+    "strength": "650mg",
+    "form": "Tablet",
+    "category": "Analgesic"
+  },
+  {
+    "brand_name": "Calpol",
+    "generic_name": "Paracetamol",
+    "strength": "500mg",
+    "form": "Tablet",
+    "category": "Analgesic"
+  },
+  {
+    "brand_name": "Azithral",
+    "generic_name": "Azithromycin",
+    "strength": "500mg",
+    "form": "Tablet",
+    "category": "Antibiotic"
+  },
+  {
+    "brand_name": "Azithral",
+    "generic_name": "Azithromycin",
+    "strength": "250mg",
+    "form": "Tablet",
+    "category": "Antibiotic"
+  },
+  {
+    "brand_name": "Crocin",
+    "generic_name": "Paracetamol",
+    "strength": "650mg",
+    "form": "Tablet",
+    "category": "Analgesic"
+  },
+  {
+    "brand_name": "Levocet",
+    "generic_name": "Levocetirizine",
+    "strength": "5mg",
+    "form": "Tablet",
+    "category": "Antihistamine"
   }
 ]
