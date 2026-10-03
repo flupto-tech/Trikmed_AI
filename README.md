@@ -1,4 +1,4 @@
-# TrikMed — WhatsApp Par Chalao Clinic
+# TrikMed 
 
 **AI-powered clinic management for Tier 2–3 India**
 
