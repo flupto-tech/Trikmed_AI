@@ -7,9 +7,11 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from pydantic import BaseModel, Field
 
 from app.ai.adapter import DeIdentifier, get_llm_client, get_speech_client
+from app.api.dependencies.auth import require_clinic_user
 from app.services.drug_validator import drug_validator
 
-router = APIRouter(prefix="/ai", tags=["AI Integration"])
+router = APIRouter(prefix="/ai", tags=["AI Integration"], dependencies=[Depends(require_clinic_user)])
+
 
 
 class MedicineItemSchema(BaseModel):
@@ -58,7 +60,7 @@ class StructureRequest(BaseModel):
 
 def _build_system_prompt() -> str:
     """Build a grounded system prompt with Hinglish clinical rules and WHO ATC drug list."""
-    drug_context = drug_validator.get_drug_context_for_prompt()
+    # No drug list in the prompt: the model extracts what was spoken; CDCI validation decides.
     return f"""You are a clinical AI prescription structuring assistant for Indian clinics.
 You convert doctor audio dictations (which frequently code-switch between Hindi, English, and Hinglish) into clean, standard structured JSON prescriptions.
 
@@ -92,9 +94,7 @@ HINGLISH & CLINICAL COMPREHENSION RULES:
    - NEVER invent, infer, substitute, or normalize a medicine/test into a different entity. Preserve uncertain terms verbatim in spoken_name.
    - Never invent a dose, frequency, duration, diagnosis, test, advice, or follow-up. Use null/empty arrays when absent.
    - Medicines must include the exact spoken_name.
-
-APPROVED DRUG REFERENCE LIST (WHO ATC Grounded):
-{drug_context}"""
+"""
 
 
 @router.post("/transcribe")
@@ -112,6 +112,15 @@ async def transcribe_audio(
         transcript = speech.transcribe(audio_bytes, filename=filename, language_hint=language_hint)
 
         latency = (time.perf_counter() - t0) * 1000
+        try:
+            from app.services.ai_cost_logger import ai_cost_logger
+            ai_cost_logger.log_speech_cost(
+                model=os.getenv("ASR_MODEL", os.getenv("OPENAI_TRANSCRIPTION_MODEL", "large-v3")),
+                duration_seconds=getattr(transcript, "duration_seconds", 0.0) or 5.0,
+                latency_ms=latency,
+            )
+        except Exception:
+            pass
         return {
             "success": True,
             "text": transcript.text,
@@ -120,6 +129,7 @@ async def transcribe_audio(
             "model": os.getenv("ASR_MODEL", os.getenv("OPENAI_TRANSCRIPTION_MODEL", "large-v3")),
             "latency_ms": round(latency, 1)
         }
+
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -142,12 +152,19 @@ def structure_prescription(payload: StructureRequest) -> dict[str, Any]:
     # afterwards; modifying the input here was the source of hallucinated drugs.
     t0 = time.perf_counter()
     llm = get_llm_client()
-    structured: StructuredPrescriptionSchema = llm.complete(
-        system=_build_system_prompt(),
-        user=scrubbed,
-        schema=StructuredPrescriptionSchema
-    )
+    try:
+        structured: StructuredPrescriptionSchema = llm.complete(
+            system=_build_system_prompt(),
+            user=scrubbed,
+            schema=StructuredPrescriptionSchema
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"AI prescription structuring service failed: {str(exc)}. Please enter details manually."
+        )
     llm_latency = (time.perf_counter() - t0) * 1000
+
 
     # Step 3: Re-attach local patient identity (Section 12.1)
     result_dict = structured.model_dump()
@@ -183,7 +200,12 @@ def structure_prescription(payload: StructureRequest) -> dict[str, Any]:
             "validation_score": val["score"],
             "validation_band": val["band"],      # "green", "yellow", "red"
             "validation_status": val["status"],  # "verified", "needs_confirmation", "unverified"
-            "auto_corrected": val["auto_corrected"]
+            "auto_corrected": val["auto_corrected"],
+            "validation_reason": val.get("reason"),     # why green/yellow/red, for the UI
+            "candidates": val.get("candidates", []),     # similar brand names (never pre-selected)
+            "options": val.get("options", []),           # strengths/forms for the doctor to pick
+            "form": val.get("form"),
+            "cdci_code": val.get("cdci_code"),
 
         }
 

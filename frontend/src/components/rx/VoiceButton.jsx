@@ -121,38 +121,42 @@ export default function VoiceButton({
       return
     }
 
-    // Browser speech recognition is deliberately disabled in production.
-    // Backend ASR is the only medical transcription source; the browser only
-    // captures audio so recognition quality is consistent across browsers.
-    const SpeechRecognition = null
+    // Browser speech recognition provides live preview & fallback transcript
+    const SpeechRecognition = typeof window !== 'undefined'
+      ? (window.SpeechRecognition || window.webkitSpeechRecognition || null)
+      : null
     if (SpeechRecognition) {
-      const recognition = new SpeechRecognition()
-      recognition.lang = 'en-IN'
-      recognition.continuous = true
-      recognition.interimResults = true
-      recognition.onresult = (event) => {
-        let interim = ''
-        let finalSegments = ''
-        for (let index = event.resultIndex; index < event.results.length; index += 1) {
-          const text = event.results[index][0]?.transcript || ''
-          if (event.results[index].isFinal) finalSegments += text
-          else interim += text
+      try {
+        const recognition = new SpeechRecognition()
+        recognition.lang = 'en-IN'
+        recognition.continuous = true
+        recognition.interimResults = true
+        recognition.onresult = (event) => {
+          let interim = ''
+          let finalSegments = ''
+          for (let index = event.resultIndex; index < event.results.length; index += 1) {
+            const text = event.results[index][0]?.transcript || ''
+            if (event.results[index].isFinal) finalSegments += text
+            else interim += text
+          }
+          if (finalSegments) accumulatedRef.current = `${accumulatedRef.current} ${finalSegments}`.trim()
+          const combined = `${accumulatedRef.current} ${interim}`.trim()
+          setLiveText(combined)
+          onTranscript?.(combined)
         }
-        if (finalSegments) accumulatedRef.current = `${accumulatedRef.current} ${finalSegments}`.trim()
-        setLiveText(`${accumulatedRef.current} ${interim}`.trim())
-      }
-      recognition.onerror = (event) => {
-        // "no-speech" and "aborted" are normal while recording. The audio
-        // upload is still available, so do not make the whole dictation fail.
-        if (!['no-speech', 'aborted'].includes(event.error)) console.warn('Speech recognition preview unavailable:', event.error)
-      }
-      recognition.onend = () => {
-        if (isRecordingRef.current) {
-          try { recognition.start() } catch {}
+        recognition.onerror = (event) => {
+          if (!['no-speech', 'aborted'].includes(event.error)) console.warn('Speech recognition preview unavailable:', event.error)
         }
+        recognition.onend = () => {
+          if (isRecordingRef.current) {
+            try { recognition.start() } catch {}
+          }
+        }
+        recognitionRef.current = recognition
+        recognition.start()
+      } catch (err) {
+        console.warn('Could not start live speech preview:', err)
       }
-      recognitionRef.current = recognition
-      try { recognition.start() } catch (err) { console.warn('Could not start live speech preview:', err) }
     }
 
     // ── 3. Timer ────────────────────────────────────────────────────────────
@@ -195,10 +199,11 @@ export default function VoiceButton({
       releaseMicrophone()
       mediaRecorderRef.current = null
 
-      const liveTranscript = ''
+      const liveTranscript = (accumulatedRef.current || liveText || '').trim()
       const fd = new FormData()
       const extension = audioBlob.type.includes('mp4') ? 'm4a' : 'webm'
       if (audioBlob) fd.append('file', audioBlob, `dictation.${extension}`)
+      if (liveTranscript) fd.append('transcript', liveTranscript)
       fd.append('language_hint', 'hi-IN')
       if (patientName) fd.append('patient_name', patientName)
       if (patientAge)  fd.append('patient_age', String(patientAge))

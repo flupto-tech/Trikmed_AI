@@ -57,8 +57,31 @@ export default function RxPrintLayout({ rx, clinic, doctor, autoPrint = false })
           boxShadow: '0 2px 16px rgba(15,35,66,.12)',
           borderRadius: 8,
           overflow: 'hidden',
+          position: 'relative',
         }}
       >
+        {!rx.is_approved && (
+          <div
+            style={{
+              position: 'absolute',
+              top: '40%',
+              left: '50%',
+              transform: 'translate(-50%, -50%) rotate(-30deg)',
+              fontSize: 38,
+              fontWeight: 900,
+              color: 'rgba(220, 38, 38, 0.16)',
+              border: '4px dashed rgba(220, 38, 38, 0.25)',
+              padding: '12px 24px',
+              borderRadius: 12,
+              pointerEvents: 'none',
+              zIndex: 10,
+              whiteSpace: 'nowrap',
+              letterSpacing: '0.1em',
+            }}
+          >
+            DRAFT — NOT APPROVED
+          </div>
+        )}
         {/* Navy header */}
         <div style={{ background: P.navy, padding: '13px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
@@ -87,7 +110,7 @@ export default function RxPrintLayout({ rx, clinic, doctor, autoPrint = false })
           <div style={{ display: 'flex', gap: 14 }}>
             <span><b style={{ color: P.muted }}>Rx No:</b> {rx.rxNumber || rx.rx_number || '—'}</span>
             <span><b style={{ color: P.muted }}>Token:</b> {rxToken}</span>
-            <span><b style={{ color: P.muted }}>Status:</b> <span style={{ color: P.green, fontWeight: 700 }}>Approved ✓</span></span>
+            <span><b style={{ color: P.muted }}>Status:</b> <span style={{ color: rx.is_approved ? P.green : P.coral, fontWeight: 700 }}>{rx.is_approved ? 'Approved ✓' : 'DRAFT'}</span></span>
           </div>
           <div style={{ display: 'flex', gap: 14 }}>
             <span><b style={{ color: P.muted }}>Date:</b> {rxDate.toLocaleDateString('en-IN')}</span>
@@ -195,19 +218,25 @@ export default function RxPrintLayout({ rx, clinic, doctor, autoPrint = false })
 
         {/* Footer: QR Code Opt-in + Doctor Signature */}
         <div style={{ borderTop: `1px solid ${P.border}`, padding: '9px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
-          {/* Section 4.4 & 9.2: QR Code linking patient to WhatsApp reminder opt-in */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <img
-              src={qrImgUrl}
-              alt="WhatsApp Reminder QR"
-              style={{ width: 52, height: 52, border: `1px solid ${P.border}`, borderRadius: 6, display: 'block' }}
-            />
-            <div>
-              <div style={{ fontSize: 10, fontWeight: 700, color: P.navy }}>WhatsApp Reminders</div>
-              <div style={{ fontSize: 9, color: P.muted }}>Scan to activate daily dose alerts</div>
-              <div style={{ fontSize: 8, color: P.blue, fontFamily: 'monospace', marginTop: 2 }}>Token: {rxToken}</div>
+          {/* Section 4.4 & 9.2: QR Code linking patient to WhatsApp reminder opt-in (shown only when approved) */}
+          {rx.is_approved ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <img
+                src={qrImgUrl}
+                alt="WhatsApp Reminder QR"
+                style={{ width: 52, height: 52, border: `1px solid ${P.border}`, borderRadius: 6, display: 'block' }}
+              />
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: P.navy }}>WhatsApp Reminders</div>
+                <div style={{ fontSize: 9, color: P.muted }}>Scan to activate daily dose alerts</div>
+                <div style={{ fontSize: 8, color: P.blue, fontFamily: 'monospace', marginTop: 2 }}>Token: {rxToken}</div>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div style={{ padding: '6px 10px', background: '#FEF2F2', border: '1px dashed #FECACA', borderRadius: 6 }}>
+              <span style={{ fontSize: 9, color: '#991B1B', fontWeight: 600 }}>QR Code enabled upon doctor approval</span>
+            </div>
+          )}
 
           {/* Doctor Signature Block */}
           <div style={{ textAlign: 'center', minWidth: 140 }}>

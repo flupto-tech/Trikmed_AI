@@ -30,7 +30,15 @@ export default function RxView() {
     setLoading(false)
   }, [])
 
-  function handlePrint() { window.print() }
+  const isApproved = Boolean(rx?.is_approved || (rx?.status === 'finalized' && rx?.is_approved !== false))
+
+  function handlePrint() {
+    if (!isApproved) {
+      alert('Prescription must be approved by a doctor before printing.')
+      return
+    }
+    window.print()
+  }
 
   function handleDuplicate() {
     if (!rx) return
@@ -40,12 +48,17 @@ export default function RxView() {
       rxNumber: generateRxNumber(),
       date: new Date().toISOString(),
       status: 'draft',
+      is_approved: false,
     }
     const saved = savePrescription(dup)
     router.push(`/portal/rx/${saved.id}`)
   }
 
   function handleWhatsApp() {
+    if (!isApproved) {
+      alert('Prescription must be approved by a doctor before sharing via WhatsApp.')
+      return
+    }
     const phone = rx?.patientPhone?.replace(/\D/g,'')
     if (!phone) { alert('No phone number on record for this patient.'); return }
     const msg = buildWhatsAppMessage(rx, clinic)
@@ -85,11 +98,11 @@ export default function RxView() {
           Back to Consultation
         </Button>
         <div className="flex-1" />
-        {rx.status === 'draft' && (
-          <span style={{ fontSize: 11, background: '#FFFBEB', color: '#92400E', padding: '3px 8px', borderRadius: 10, fontWeight: 600 }}>Draft</span>
+        {!isApproved && (
+          <span style={{ fontSize: 11, background: '#FEF2F2', color: '#991B1B', border: '1px solid #FECACA', padding: '3px 8px', borderRadius: 10, fontWeight: 600 }}>Unapproved Draft</span>
         )}
-        {rx.status === 'finalized' && (
-          <span style={{ fontSize: 11, background: '#F0FDF4', color: '#15803D', padding: '3px 8px', borderRadius: 10, fontWeight: 600 }}>Finalized</span>
+        {isApproved && (
+          <span style={{ fontSize: 11, background: '#F0FDF4', color: '#15803D', border: '1px solid #BBF7D0', padding: '3px 8px', borderRadius: 10, fontWeight: 600 }}>Approved ✓</span>
         )}
         <Button
           size="sm"
@@ -103,19 +116,35 @@ export default function RxView() {
           <Button
             size="sm"
             icon={waSuccess ? CheckCircle : MessageCircle}
-            onClick={handleWhatsApp}
+            onClick={isApproved ? handleWhatsApp : undefined}
             className="border-none shadow-none focus:ring-green-400"
-            style={{ background: waSuccess ? '#15803D' : '#25D366' }}
+            style={{
+              background: !isApproved ? '#9CA3AF' : waSuccess ? '#15803D' : '#25D366',
+              opacity: !isApproved ? 0.5 : 1,
+              cursor: !isApproved ? 'not-allowed' : 'pointer'
+            }}
           >
             {waSuccess ? 'Sent!' : 'WhatsApp'}
           </Button>
         )}
-        <Button size="sm" icon={Printer} onClick={handlePrint}>Print</Button>
+        <Button
+          size="sm"
+          icon={Printer}
+          onClick={isApproved ? handlePrint : undefined}
+          style={!isApproved ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
+        >
+          Print
+        </Button>
       </div>
 
       {/* Print layout */}
       <div style={{ maxWidth:600, margin:'24px auto', padding:'0 12px 40px' }}>
-        <RxPrintLayout rx={rx} clinic={clinic} doctor={doc} autoPrint={autoPrint}/>
+        {!isApproved && (
+          <div className="no-print" style={{ background:'#FEF2F2', border:'1px solid #FCA5A5', color:'#991B1B', borderRadius:10, padding:'10px 14px', marginBottom:16, fontSize:13, fontWeight:600, display:'flex', alignItems:'center', gap:8 }}>
+            <span>⚠ This prescription is unapproved. Doctor approval is required before printing or sharing via WhatsApp.</span>
+          </div>
+        )}
+        <RxPrintLayout rx={rx} clinic={clinic} doctor={doc} autoPrint={autoPrint && isApproved}/>
       </div>
 
       <style>{`

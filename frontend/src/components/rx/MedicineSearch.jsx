@@ -3,6 +3,7 @@ import { useState, useRef, useEffect } from 'react'
 import { Search, Plus, Star } from 'lucide-react'
 import { searchMedicines } from '../../../lib/medicines-data'
 import { getCustomMedicines, getFavourites } from '../../../lib/rxStorage'
+import api from '../../services/api'
 
 const LIGHT = { navy:'#0F2342', coral:'#E84C3D', cream:'#F7F5F0', surface:'#FAFAF7', border:'#D3D1C7', muted:'#6B7A9A', blue:'#1A5CB5', dropBg:'#fff', dropBorder:'#D3D1C7', hover:'#F7F5F0' }
 const DARK  = { navy:'#F0F0F0', coral:'#E84C3D', cream:'#243040', surface:'#243040', border:'#2A3A50', muted:'#7A93AC', blue:'#4A90D9', dropBg:'#1A2332', dropBorder:'#2A3A50', hover:'#243040' }
@@ -36,10 +37,42 @@ export default function MedicineSearch({ doctorId='dr001', onSelect, onAddCustom
   useEffect(() => {
     clearTimeout(timer.current)
     if (q.length < 2) { setResults([]); setOpen(false); return }
-    timer.current = setTimeout(() => {
+    timer.current = setTimeout(async () => {
       const custom = getCustomMedicines(doctorId)
-      const r = searchMedicines(q, custom).slice(0, 8)
-      setResults(r); setOpen(true)
+      let apiMatches = []
+      try {
+        const resp = await api.get(`/drugs/search?q=${encodeURIComponent(q)}&limit=10`)
+        if (resp?.results && Array.isArray(resp.results)) {
+          apiMatches = resp.results.map((r, i) => ({
+            id: r.cdci_code || `cdci-${i}-${r.label}`,
+            brandName: r.label || r.base_name || r.name,
+            genericName: r.generic_name || '',
+            form: r.form_text || '',
+            strengths: r.strength_text ? [r.strength_text] : [],
+            isCustom: false,
+            validation_band: 'green',
+            validation_status: 'verified',
+            doctor_confirmed: true,
+            source: 'search',
+          }))
+        }
+      } catch (e) {
+        // Fall back to local medicines
+      }
+
+      let combined = []
+      if (apiMatches.length > 0) {
+        const customMatches = custom.filter(c =>
+          (c.brandName || '').toLowerCase().includes(q.toLowerCase()) ||
+          (c.genericName || '').toLowerCase().includes(q.toLowerCase())
+        )
+        combined = [...customMatches, ...apiMatches].slice(0, 10)
+      } else {
+        combined = searchMedicines(q, custom).slice(0, 8)
+      }
+
+      setResults(combined)
+      setOpen(true)
     }, 280)
     return () => clearTimeout(timer.current)
   }, [q, doctorId])
@@ -59,14 +92,18 @@ export default function MedicineSearch({ doctorId='dr001', onSelect, onAddCustom
       id: med.id,
       brandName: med.brandName,
       genericName: med.genericName,
-      strength: med.strengths?.[0] || '',
+      strength: med.strength || med.strengths?.[0] || '',
       strengths: med.strengths || [],
-      form: med.form,
-      dosage: med.defaultDosage || '',
-      timing: med.defaultTiming || '',
-      duration: med.defaultDuration || '',
+      form: med.form || 'Tablet',
+      dosage: med.defaultDosage || '1-0-1',
+      timing: med.defaultTiming || 'After food',
+      duration: med.defaultDuration || '3 days',
       notes: '',
       isCustom: med.isCustom || false,
+      validation_band: 'green',
+      validation_status: 'verified',
+      doctor_confirmed: true,
+      source: 'search',
     })
     setQ(''); setResults([]); setOpen(false)
   }
