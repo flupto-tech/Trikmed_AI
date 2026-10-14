@@ -4,9 +4,13 @@ from typing import Any
 from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.api.dependencies.auth import require_clinic_user, store
+from app.api.dependencies.auth import require_clinic_user, require_doctor, store
 from app.services.drug_validator import drug_validator
 from app.utils.time import now_iso
+from drug_validation.supabase_client import supabase_drug_client
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Prescriptions"])
 
@@ -17,7 +21,9 @@ def list_prescriptions(
     current_user: dict[str, Any] = Depends(require_clinic_user)
 ) -> list[dict[str, Any]]:
     """List all clinic prescriptions, scoped by authenticated clinic."""
-    clinic_id = current_user.get("clinic_id") or "CLN-001"
+    clinic_id = current_user.get("clinic_id")
+    if not clinic_id:
+        raise HTTPException(status_code=403, detail="Clinic identity missing from authenticated account")
     return store.list_prescriptions(clinic_id, doctor_id=doctor_id)
 
 
@@ -38,8 +44,10 @@ def get_historical_suggestions(
         if not diagnosis.strip():
             return []
         
-        clinic_id = current_user.get("clinic_id") or "CLN-001"
-        doctor_id = current_user.get("id") or "dr001"
+        clinic_id = current_user.get("clinic_id")
+        doctor_id = current_user.get("id")
+        if not clinic_id or not doctor_id:
+            return []
 
         past_rxs = store.get_historical_prescriptions(clinic_id, doctor_id, diagnosis)
         if not past_rxs:
@@ -84,7 +92,9 @@ def get_prescription(
     current_user: dict[str, Any] = Depends(require_clinic_user)
 ) -> dict[str, Any]:
     """Retrieve a single prescription with clinic scoping check."""
-    clinic_id = current_user.get("clinic_id") or "CLN-001"
+    clinic_id = current_user.get("clinic_id")
+    if not clinic_id:
+        raise HTTPException(status_code=403, detail="Clinic identity missing from authenticated account")
     try:
         rx = store.get_prescription(prescription_id, clinic_id=clinic_id)
         if not rx:
@@ -100,25 +110,28 @@ def create_prescription(
     current_user: dict[str, Any] = Depends(require_clinic_user)
 ) -> dict[str, Any]:
     """Create or update a prescription record in unapproved draft state."""
-    clinic_id = current_user.get("clinic_id") or "CLN-001"
-    doctor_id = current_user.get("id") or "dr001"
+    clinic_id = current_user.get("clinic_id")
+    doctor_id = current_user.get("id")
+    if not clinic_id or not doctor_id:
+        raise HTTPException(status_code=403, detail="Clinic or doctor identity missing from authenticated account")
     
     # Auto-log doctor corrections (Section 5.3)
-    from drug_validation.supabase_client import supabase_drug_client
+    # Guarded: in demo mode log_doctor_correction raises RuntimeError — log and continue.
     rx_id = payload.get("id")
     for med in payload.get("medicines", []):
         raw_name = med.get("raw_name")
         current_name = med.get("brandName") or med.get("name")
         if raw_name and current_name and raw_name.lower() != current_name.lower():
-            # If the user accepted a yellow band or manually typed a different name
-            # log it for AI self-learning
-            supabase_drug_client.log_doctor_correction(
-                original_text=raw_name,
-                corrected_text=current_name,
-                prescription_id=rx_id,
-                doctor_id=doctor_id,
-                item_type="drug"
-            )
+            try:
+                supabase_drug_client.log_doctor_correction(
+                    original_text=raw_name,
+                    corrected_text=current_name,
+                    prescription_id=rx_id,
+                    doctor_id=doctor_id,
+                    item_type="drug"
+                )
+            except RuntimeError as exc:
+                logger.debug("log_doctor_correction skipped (demo mode or unconfigured): %s", exc)
 
     rx_data = {
         **payload,
@@ -135,7 +148,7 @@ def create_prescription(
 @router.post("/prescriptions/{prescription_id}/approve")
 def approve_prescription(
     prescription_id: str,
-    current_user: dict[str, Any] = Depends(require_clinic_user)
+    current_user: dict[str, Any] = Depends(require_doctor)
 ) -> dict[str, Any]:
     """Section 4.3: Structural Doctor Approval Gate.
     
@@ -145,8 +158,10 @@ def approve_prescription(
     3. Records approved_by audit trail.
     4. Mints per-prescription RX-XXXXXX token for WhatsApp reminder opt-in (Section 9.2).
     """
-    clinic_id = current_user.get("clinic_id") or "CLN-001"
-    approved_by = current_user.get("id") or "dr001"
+    clinic_id = current_user.get("clinic_id")
+    approved_by = current_user.get("id")
+    if not clinic_id or not approved_by:
+        raise HTTPException(status_code=403, detail="Clinic or doctor identity missing from authenticated account")
 
     try:
         approved_rx = store.approve_prescription(prescription_id, clinic_id, approved_by)
@@ -165,8 +180,12 @@ def approve_prescription(
             "approved_by": approved_by,
             "disclaimer": "Clinical decision support only. Doctor verification mandatory."
         }
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Prescription not found")
     except PermissionError:
         raise HTTPException(status_code=403, detail="Cross-clinic access denied")
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 @router.post("/prescriptions/{prescription_id}/send-whatsapp")
@@ -174,7 +193,43 @@ def send_prescription_whatsapp(
     prescription_id: str,
     current_user: dict[str, Any] = Depends(require_clinic_user)
 ) -> dict[str, bool]:
+    clinic_id = current_user.get("clinic_id")
+    if not clinic_id:
+        raise HTTPException(status_code=403, detail="Clinic identity missing from authenticated account")
+    try:
+        rx = store.get_prescription(prescription_id, clinic_id=clinic_id)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Cross-clinic access denied")
+    if not rx:
+        raise HTTPException(status_code=404, detail="Prescription not found")
+    if not rx.get("is_approved"):
+        raise HTTPException(
+            status_code=400,
+            detail="Prescription must be approved by a doctor before sharing via WhatsApp"
+        )
     return {"success": True}
+
+
+@router.get("/prescriptions/{prescription_id}/print")
+def print_prescription(
+    prescription_id: str,
+    current_user: dict[str, Any] = Depends(require_clinic_user)
+) -> dict[str, Any]:
+    clinic_id = current_user.get("clinic_id")
+    if not clinic_id:
+        raise HTTPException(status_code=403, detail="Clinic identity missing from authenticated account")
+    try:
+        rx = store.get_prescription(prescription_id, clinic_id=clinic_id)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Cross-clinic access denied")
+    if not rx:
+        raise HTTPException(status_code=404, detail="Prescription not found")
+    if not rx.get("is_approved"):
+        raise HTTPException(
+            status_code=400,
+            detail="Prescription must be approved by a doctor before printing"
+        )
+    return {"success": True, "prescription": rx}
 
 from pydantic import BaseModel
 
@@ -190,14 +245,19 @@ def log_correction(
     current_user: dict[str, Any] = Depends(require_clinic_user)
 ) -> dict[str, Any]:
     """Section 5.3: Log doctor corrections for auditability and AI self-learning."""
-    from drug_validation.supabase_client import supabase_drug_client
-    doctor_id = current_user.get("id") or "dr001"
-    success = supabase_drug_client.log_doctor_correction(
-        original_text=payload.original_text,
-        corrected_text=payload.corrected_text,
-        prescription_id=prescription_id,
-        doctor_id=doctor_id,
-        item_type=payload.item_type
-    )
+    doctor_id = current_user.get("id")
+    if not doctor_id:
+        raise HTTPException(status_code=403, detail="Doctor identity missing from authenticated account")
+    try:
+        success = supabase_drug_client.log_doctor_correction(
+            original_text=payload.original_text,
+            corrected_text=payload.corrected_text,
+            prescription_id=prescription_id,
+            doctor_id=doctor_id,
+            item_type=payload.item_type
+        )
+    except RuntimeError as exc:
+        logger.debug("log_doctor_correction skipped (demo mode or unconfigured): %s", exc)
+        success = False
     return {"success": success}
 

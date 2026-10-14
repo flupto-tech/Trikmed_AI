@@ -577,6 +577,9 @@ export default function NewRx({ doctorId='dr001' }) {
         validation_status: m.validation_status || 'unverified',
         matched_name: m.matched_name,
         validation_score: m.validation_score,
+        candidates: m.candidates || [],
+        options: m.options || [],
+        doctor_confirmed: m.validation_band === 'green' ? true : false,
       }))
       setMedicines(prev => [...prev, ...formattedMeds])
     }
@@ -639,17 +642,20 @@ export default function NewRx({ doctorId='dr001' }) {
     return s
   }
 
-  async function handlePrint() { const rx=await saveDraft(); if(!rx)return; router.push(`/portal/rx/${rx.id}?print=1`) }
+  async function handlePrint() {
+    if (!patient) return
+    if (!confirm('Printing requires ending and approving this prescription. Proceed with approval and print?')) {
+      return
+    }
+    await handleEndConsultation()
+  }
 
   async function handleWhatsApp() {
-    const rx = await saveDraft()
-    if (!rx) return
-    const phone = patient?.phone?.replace(/\D/g,'')
-    if (phone) {
-      const msg = buildWhatsAppMessage(rx, clinic)
-      window.open(`https://wa.me/91${phone}?text=${encodeURIComponent(msg)}`, '_blank')
+    if (!patient) return
+    if (!confirm('Sharing via WhatsApp requires ending and approving this prescription. Proceed with approval and WhatsApp sharing?')) {
+      return
     }
-    router.push(`/portal/rx/${rx.id}`)
+    await handleEndConsultation()
   }
 
   async function handleNextPatient() {
@@ -670,6 +676,17 @@ export default function NewRx({ doctorId='dr001' }) {
     const rx = buildRx(true)
     const s = savePrescription(rx)
 
+    // Check for unresolved yellow/red matches
+    const unresolvedMeds = medicines.filter(m =>
+      (m.validation_band === 'yellow' || m.validation_band === 'red') && !m.doctor_confirmed
+    )
+    if (unresolvedMeds.length > 0) {
+      const names = unresolvedMeds.map(m => m.brandName || m.spoken_name || 'Unknown medicine').join(', ')
+      alert(`Approval blocked: Please confirm or resolve the following medicines before ending consultation:\n${names}`)
+      setSaving(false)
+      return
+    }
+
     // Call backend Approval Gate (Section 4.3)
     let approvedToken = null
     let approvedAt = null
@@ -682,9 +699,15 @@ export default function NewRx({ doctorId='dr001' }) {
         s.is_approved = true
         approvedToken = approvalRes.rx_token
         approvedAt = approvalRes.approved_at
+      } else {
+        throw new Error('Approval token not received from server')
       }
     } catch (err) {
-      console.warn('Backend approval gate fallback:', err)
+      console.error('Backend approval gate failed:', err)
+      const detail = err?.detail?.items ? err.detail.items.join('\n') : (err?.message || err?.detail || 'Approval failed')
+      alert(`Approval failed: ${detail}\nThe prescription was not finalized.`)
+      setSaving(false)
+      return
     }
 
     const final = finalizePrescription(s.id)

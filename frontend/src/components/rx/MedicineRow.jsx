@@ -69,28 +69,90 @@ export default function MedicineRow({ medicine, doctorId='dr001', onChange, onRe
             </span>
           )}
           {medicine.validation_band === 'yellow' && (
-            <span style={{ fontSize:11, background:'#FEF3C7', color:'#92400E', border:'1px solid #FDE68A', padding:'2px 8px', borderRadius:6, marginLeft:6, fontWeight:600, display:'inline-flex', alignItems:'center', gap:5 }}>
-              <span>Confirm: <strong>{medicine.matched_name}</strong></span>
-              <button
-                type="button"
-                onClick={() => onChange({
-                  ...medicine,
-                  brandName: medicine.matched_name || medicine.brandName,
-                  validation_band: 'green',
-                  validation_status: 'verified',
-                })}
-                style={{
-                  background: '#D97706', color: '#fff', border: 'none', borderRadius: 4,
-                  padding: '1px 6px', fontSize: 10, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit'
-                }}>
-                Accept ✓
-              </button>
-            </span>
+            <div style={{ marginTop: 6, padding: '6px 10px', background: '#FEF3C7', border: '1px solid #FDE68A', borderRadius: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', fontSize: 11, color: '#92400E', fontWeight: 600 }}>
+                <span>Uncertain match — Doctor confirmation required:</span>
+                {medicine.matched_name && (
+                  <button
+                    type="button"
+                    onClick={() => onChange({
+                      ...medicine,
+                      brandName: medicine.matched_name,
+                      validation_band: 'green',
+                      validation_status: 'verified',
+                      doctor_confirmed: true,
+                    })}
+                    style={{
+                      background: '#D97706', color: '#fff', border: 'none', borderRadius: 6,
+                      padding: '2px 8px', fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit'
+                    }}>
+                    Accept "{medicine.matched_name}" ✓
+                  </button>
+                )}
+              </div>
+              {medicine.candidates && medicine.candidates.length > 0 && (
+                <div style={{ marginTop: 5, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 10, color: '#B45309', fontWeight: 600 }}>Candidates:</span>
+                  {medicine.candidates.slice(0, 4).map((cand, idx) => {
+                    const cName = typeof cand === 'string' ? cand : cand.name
+                    const cGen = typeof cand === 'object' ? cand.generic_name : ''
+                    return (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => onChange({
+                          ...medicine,
+                          brandName: cName,
+                          genericName: cGen || medicine.genericName,
+                          validation_band: 'green',
+                          validation_status: 'verified',
+                          doctor_confirmed: true,
+                        })}
+                        style={{
+                          background: '#fff', color: '#92400E', border: '1px solid #FCD34D', borderRadius: 6,
+                          padding: '2px 8px', fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit'
+                        }}>
+                        {cName}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+              {medicine.options && medicine.options.length > 0 && (
+                <div style={{ marginTop: 5, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 10, color: '#B45309', fontWeight: 600 }}>Available Options:</span>
+                  {medicine.options.slice(0, 4).map((opt, idx) => {
+                    const label = typeof opt === 'string' ? opt : opt.label
+                    return (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => onChange({
+                          ...medicine,
+                          brandName: label,
+                          genericName: opt.generic_name || medicine.genericName,
+                          validation_band: 'green',
+                          validation_status: 'verified',
+                          doctor_confirmed: true,
+                        })}
+                        style={{
+                          background: '#fff', color: '#92400E', border: '1px solid #FCD34D', borderRadius: 6,
+                          padding: '2px 8px', fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit'
+                        }}>
+                        {label}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
           )}
           {medicine.validation_band === 'red' && (
-            <span style={{ fontSize:10, background:'#FEE2E2', color:'#991B1B', border:'1px solid #FECACA', padding:'2px 8px', borderRadius:6, marginLeft:6, fontWeight:600 }}>
-              ⚠ Unverified (Manual review)
-            </span>
+            <div style={{ marginTop: 4 }}>
+              <span style={{ fontSize:10, background:'#FEE2E2', color:'#991B1B', border:'1px solid #FECACA', padding:'2px 8px', borderRadius:6, fontWeight:600 }}>
+                ⚠ Unverified drug — doctor review mandatory
+              </span>
+            </div>
           )}
         </div>
         <button onClick={handleFav} title={fav?'Remove fav':'Add fav'}

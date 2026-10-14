@@ -193,7 +193,12 @@ class WhisperService:
                 logger.warning(f"Whisper returned empty transcript from audio file: {audio_path}")
                 raise ValueError("No speech detected in audio. Please speak clearly and try again.")
 
-            logger.info(f"Transcription complete. Language: '{info.language}' ({info.duration}s). Text: {final_text[:100]}")
+            logger.info(
+                "Transcription complete. Language: '%s' (%.2fs, chars=%d)",
+                info.language,
+                info.duration,
+                len(final_text),
+            )
             return final_text
         finally:
             if wav_path and os.path.exists(wav_path):

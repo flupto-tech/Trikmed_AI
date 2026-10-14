@@ -7,7 +7,12 @@ import re
 from typing import Any
 from rapidfuzz import fuzz, process
 
+from app.core.config import load_environment
+
+load_environment()
+
 DRUG_DB_PATH = Path(__file__).resolve().parents[1] / 'data' / 'drug_reference.json'
+
 
 
 class DrugValidator:
@@ -20,6 +25,8 @@ class DrugValidator:
         self.atc_lookup: dict[str, list[dict[str, Any]]] = {}
         self.validation_logs: list[dict[str, Any]] = []
         self._load_database()
+        from drug_validation.cdci_matcher import load_matcher
+        self.matcher = load_matcher()
 
     def _load_database(self) -> None:
         if self.db_path.exists():
@@ -38,7 +45,9 @@ class DrugValidator:
                     self.atc_lookup.setdefault(atc, []).append(med)
 
     def _semantic_fallback(self, cleaned: str) -> dict[str, Any] | None:
+        import logging as _logging
         import os
+        _log = _logging.getLogger(__name__)
         try:
             from drug_validation.embeddings import embedding_service
             from drug_validation.supabase_client import supabase_drug_client
@@ -46,12 +55,14 @@ class DrugValidator:
             embedding = embedding_service.get_embedding(cleaned)
             if not embedding:
                 return None
-                
+
             hits = supabase_drug_client.rpc_match_drug_semantic(embedding)
             semantic_threshold = float(os.getenv("SEMANTIC_THRESHOLD", "0.80"))
 
-            if hits and hits[0]["score"] >= semantic_threshold:
-                hit = hits[0]
+            # Filter out demo-mode sentinel before inspecting scores.
+            real_hits = [h for h in hits if not h.get("_demo_unavailable")]
+            if real_hits and real_hits[0].get("score", 0) >= semantic_threshold:
+                hit = real_hits[0]
                 return {
                     'raw_name': cleaned,
                     'matched_name': hit.get('brand'),
@@ -65,141 +76,26 @@ class DrugValidator:
                     'method': 'pgvector_semantic_fallback',
                     'details': hit,
                 }
-        except Exception:
-            pass
+        except RuntimeError as exc:
+            _log.warning("_semantic_fallback: RPC unavailable — %s", exc)
+        except Exception as exc:
+            _log.warning("_semantic_fallback: unexpected error — %s", type(exc).__name__)
         return None
 
     def validate_medicine_name(self, raw_name: str) -> dict[str, Any]:
-        cleaned = (raw_name or '').strip()
-        timestamp = datetime.now(timezone.utc).isoformat()
+        if self.matcher is None:
+            from drug_validation.cdci_matcher import load_matcher
+            self.matcher = load_matcher()
 
-        if not cleaned or not self.brand_names:
-            res = {
-                'raw_name': raw_name,
-                'matched_name': None,
-                'score': 0.0,
-                'band': 'red',
-                'auto_corrected': False,
-                'status': 'unverified',
-                'method': 'empty',
-                'timestamp': timestamp,
-            }
-            self.log_validation(res)
-            return res
-
-        normalized_query = cleaned
-        for alias_pattern, replacement in [
-            (r"\b(do\s*low|duo\s*low|dolow)\b", "Dolo"),
-            (r"\b(ogmentin|augmenten|augmenton)\b", "Augmentin"),
-            (r"\b(diploma\s*mall|diploma\s*mole|diplomall|diclomol|diclo\s*mol)\b", "Diclomol"),
-            (r"\bpan\s*d\b", "Pan D"),
-            (r"\bpant\s*40\b", "Pan 40"),
-            (r"\bpan\s+40\b", "Pan 40"),
-            (r"\bpantocid\b", "Pan 40"),
-            (r"\b(nitro\s*glycerine|nitro\s*glycerin|nitroglycerin|nitroglycerine)\b", "Nitrocontin"),
-            (r"\b(allegra\b)", "Allegra 120"),
-            (r"\b(meftal\s*spas)\b", "Meftal-Spas"),
-            (r"\b(montair\s*lc)\b", "Montair-LC"),
-            (r"\b(taxim\s*o)\b", "Taxim-O"),
-            (r"\b(ascoril\s*d)\b", "Ascoril-D"),
-            (r"\b(livo\s*thyroxin|levo\s*thyroxin[e]?|livo\s*thyroxine|levothyroxin[e]?)\b", "Levothyroxine"),
-            # Common phonetic/ASR variants for Indian brands
-            (r"\b(paci\s*mol|pacimole|paci\s*mole)\b", "Pacimol"),
-            (r"\b(cal\s*pol|kalpol)\b", "Calpol"),
-            (r"\b(azith\s*ral|azitral|azithrol)\b", "Azithral"),
-            (r"\b(combi\s*flam|combiflame)\b", "Combiflam"),
-            (r"\b(beco\s*sules|bicosules)\b", "Becosules"),
-            (r"\b(shelcal|shel\s*cal)\b", "Shelcal 500"),
-            (r"\b(supra\s*dyn|supradyne)\b", "Supradyn"),
-            (r"\b(eco\s*sprin)\b", "Ecosprin 75"),
-            (r"\b(clavam|clavum)\b", "Clavam 625"),
-            (r"\b(limcee|lim\s*cee)\b", "Limcee"),
-            (r"\b(neurobion|neuro\s*bion)\b", "Neurobion Forte"),
-        ]:
-            normalized_query = re.sub(alias_pattern, replacement, normalized_query, flags=re.IGNORECASE)
-
-        # Build candidate queries: original, title-cased version (handles lowercase ASR output)
-        candidates_to_score = list({cleaned, normalized_query, cleaned.title(), normalized_query.title()})
-        best_match_name = None
-        highest_score = 0.0
-
-        for q in candidates_to_score:
-            m_sort = process.extractOne(q, self.brand_names, scorer=fuzz.token_sort_ratio)
-            if m_sort and m_sort[1] > highest_score:
-                best_match_name = m_sort[0]
-                highest_score = float(m_sort[1])
-
-        normalized_score = highest_score / 100.0
-
-        if normalized_score >= 0.85 and best_match_name:
-            res = {
-                'raw_name': raw_name,
-                'matched_name': best_match_name,
-                'score': round(normalized_score, 3),
-                'band': 'green',
-                'auto_corrected': True,
-                'status': 'verified',
-                'method': 'fuzzy_match',
-                'details': self.brand_lookup.get(best_match_name.lower()),
-                'timestamp': timestamp,
-            }
-            self.log_validation(res)
-            return res
-
-        elif normalized_score >= 0.70 and best_match_name:
-            res = {
-                'raw_name': raw_name,
-                'matched_name': best_match_name,
-                'score': round(normalized_score, 3),
-                'band': 'yellow',
-                'auto_corrected': False,
-                'status': 'needs_confirmation',
-                'method': 'fuzzy_match',
-                'details': self.brand_lookup.get(best_match_name.lower()),
-                'timestamp': timestamp,
-            }
-            self.log_validation(res)
-            return res
-
-        # 2. Generic Name Match (Lower Priority)
-        generic_names = list(self.generic_lookup)
-        generic_hit = process.extractOne(normalized_query.lower(), generic_names, scorer=fuzz.token_sort_ratio)
-        if generic_hit and float(generic_hit[1]) >= 70:
-            generic_name = generic_hit[0]
-            representative = self.generic_lookup[generic_name][0]
-            score = min(float(generic_hit[1]) / 100.0, 0.84)
-            res = {
-                'raw_name': raw_name,
-                'matched_name': representative.get('brand_name'),
-                'generic_name': representative.get('generic_name'),
-                'score': round(score, 3),
-                'band': 'yellow',
-                'auto_corrected': False,
-                'status': 'needs_confirmation',
-                'method': 'generic_fuzzy_candidate',
-                'details': representative,
-                'timestamp': timestamp,
-            }
-            self.log_validation(res)
-            return res
-
-        # 3. Semantic Fallback
-        fallback_res = self._semantic_fallback(normalized_query)
-        if fallback_res:
-            fallback_res['timestamp'] = timestamp
-            self.log_validation(fallback_res)
-            return fallback_res
-
-        res = {
-            'raw_name': raw_name,
-            'matched_name': None,
-            'score': round(normalized_score, 3),
-            'band': 'red',
-            'auto_corrected': False,
-            'status': 'unverified',
-            'method': 'unmatched',
-            'timestamp': timestamp,
-        }
+        if self.matcher is None:
+            res = {"spoken_name": raw_name, "matched_name": None, "band": "red", "status": "unverified",
+                   "reason": "reference_not_loaded", "score": 0.0, "candidates": [], "options": [],
+                   "auto_corrected": False, "generic_name": None}
+        else:
+            res = self.matcher.validate(raw_name)
+        res["raw_name"] = raw_name
+        res["method"] = res["reason"]
+        res["timestamp"] = datetime.now(timezone.utc).isoformat()
         self.log_validation(res)
         return res
 
@@ -237,8 +133,33 @@ class DrugValidator:
     def get_drug_context_for_prompt(self, limit: int = 40) -> str:
         return ", ".join(self.brand_names[:limit])
 
+    def get_validation_logs(self) -> list[dict[str, Any]]:
+        return list(self.validation_logs)
+
     def log_validation(self, result: dict[str, Any]) -> None:
-        self.validation_logs.append(result)
+        # Enrich in-memory entry with a timestamp so callers can rely on created_at
+        entry = {**result, "created_at": result.get("created_at") or datetime.now(timezone.utc).isoformat()}
+        self.validation_logs.append(entry)
+        # Durable persistence of non-sensitive validation event (Fix 6b)
+        try:
+            import os
+            from app.core.config import load_environment
+            load_environment()
+            if os.getenv("TRIKMED_DEMO_MODE", "").lower() != "true":
+                from app.api.dependencies.auth import store
+                if hasattr(store, "_insert") and not getattr(store, "_is_demo", True):
+                    log_row = {
+                        "spoken_name": entry.get("spoken_name") or entry.get("raw_name") or "",
+                        "matched_name": entry.get("matched_name"),
+                        "score": float(entry.get("score") or entry.get("validation_score") or 0.0),
+                        "band": entry.get("band") or entry.get("validation_band") or "red",
+                        "reason": entry.get("reason") or entry.get("validation_reason") or "",
+                        "created_at": entry["created_at"],
+                    }
+                    store._insert("drug_validation_log", log_row)
+        except Exception:
+            # Durable logging failure must never break or delay prescription flow
+            pass
 
 
 drug_validator = DrugValidator()

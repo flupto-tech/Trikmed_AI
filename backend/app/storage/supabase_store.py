@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+import logging
 import os
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -11,6 +14,8 @@ from app.core.config import load_environment
 from app.storage.supabase_rest import get_supabase_admin_key, supabase_rest_headers
 from app.utils.phone import normalize_phone
 from app.utils.time import now_iso
+
+logger = logging.getLogger(__name__)
 
 
 def _is_uuid(value: Any) -> bool:
@@ -213,6 +218,16 @@ DEMO_USERS = {
         "password_hash": hash_password("install1234"),
         "is_active": True,
     },
+    "dr_noclinic@trikmed.com": {
+        "id": "USR-DEMO-NOCLINIC",
+        "email": "dr_noclinic@trikmed.com",
+        "name": "Dr. No Clinic",
+        "role": "clinic",
+        "clinic_id": None,
+        "clinic_role": "doctor",
+        "password_hash": hash_password("demo1234"),
+        "is_active": True,
+    },
 }
 
 DEMO_CLINICS = [
@@ -290,7 +305,9 @@ class SupabaseStore:
 
     def _resolve_doctor_id(self, clinic_id: str, doctor_id: str | None = None) -> str:
         if self._is_demo:
-            return doctor_id or "dr001"
+            if not doctor_id:
+                raise ValueError("doctor_id is required — refusing to assign a fabricated doctor ID")
+            return doctor_id
         try:
             if doctor_id and _is_uuid(doctor_id):
                 rows = self._select(
@@ -315,8 +332,13 @@ class SupabaseStore:
                 },
             )
             return doctor["id"]
-        except Exception:
-            return doctor_id or "dr001"
+        except Exception as exc:
+            logger.error("_resolve_doctor_id failed for clinic %s: %s", clinic_id, exc)
+            if doctor_id:
+                return doctor_id
+            raise RuntimeError(
+                f"Could not resolve a valid doctor ID for clinic {clinic_id}: {exc}"
+            ) from exc
 
     def _profile_row(self, user: dict[str, Any]) -> dict[str, Any]:
         row: dict[str, Any] = {
@@ -1143,12 +1165,18 @@ class SupabaseStore:
         }
 
     def add_prescription(self, prescription: dict[str, Any]) -> dict[str, Any]:
-        clinic_id = self._resolve_clinic_id(prescription.get("clinic_id")) or prescription.get("clinic_id") or "CLN-001"
+        resolved_clinic_id = self._resolve_clinic_id(prescription.get("clinic_id")) or prescription.get("clinic_id")
+        if not resolved_clinic_id:
+            raise ValueError("clinic_id is required to create a prescription — refusing to assign a fabricated clinic")
+        clinic_id = resolved_clinic_id
+        doctor_id = prescription.get("doctor_id") or prescription.get("doctorId")
+        if not doctor_id:
+            raise ValueError("doctor_id is required to create a prescription — refusing to assign a fabricated doctor")
         rx_id = prescription.get("id") or f"RX-{uuid4().hex[:8].upper()}"
         rx_record = {
             "id": rx_id,
             "clinic_id": clinic_id,
-            "doctor_id": prescription.get("doctor_id") or prescription.get("doctorId") or "dr001",
+            "doctor_id": doctor_id,
             "patient_id": prescription.get("patient_id") or prescription.get("patientId"),
             "patient_name": prescription.get("patient_name") or prescription.get("patientName") or "",
             "patient_phone": prescription.get("patient_phone") or prescription.get("patientPhone") or "",
@@ -1171,15 +1199,73 @@ class SupabaseStore:
             "created_at": prescription.get("created_at") or now_iso(),
             "updated_at": now_iso(),
         }
-        if not hasattr(self, "_memory_prescriptions"):
-            self._memory_prescriptions = {}
-        self._memory_prescriptions[rx_id] = deepcopy(rx_record)
+        records = self._load_prescriptions()
+        records[rx_id] = deepcopy(rx_record)
+        self._save_prescriptions(records)
+
+        if not self._is_demo:
+            try:
+                res = self.client.post(
+                    "/prescriptions",
+                    json=rx_record,
+                    headers={"Prefer": "resolution=merge-duplicates"}
+                )
+                if res.status_code >= 400:
+                    logger.error("Supabase insert prescription failed: %s %s", res.status_code, res.text)
+                    raise RuntimeError(f"Database error persisting prescription: {res.status_code} {res.text}")
+            except Exception as e:
+                logger.error("Failed to persist prescription %s to Supabase: %s", rx_id, e)
+                raise RuntimeError(f"Failed to persist prescription to database: {e}") from e
+
         return deepcopy(rx_record)
 
+    def _get_prescriptions_file(self) -> Path:
+        data_dir = Path(__file__).resolve().parent.parent / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        return data_dir / "prescriptions.json"
+
+    def _load_prescriptions(self) -> dict[str, dict[str, Any]]:
+        file_path = self._get_prescriptions_file()
+        if not file_path.exists():
+            return {}
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+                elif isinstance(data, list):
+                    return {item.get("id"): item for item in data if isinstance(item, dict) and item.get("id")}
+        except Exception as e:
+            logger.error("Failed to parse prescriptions file %s: %s", file_path, e)
+        return {}
+
+    def _save_prescriptions(self, prescriptions: dict[str, dict[str, Any]]) -> None:
+        file_path = self._get_prescriptions_file()
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(prescriptions, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.error("Failed to persist prescriptions to %s: %s", file_path, e)
+            raise RuntimeError(f"Local prescription save failed: {e}") from e
     def get_prescription(self, rx_id: str, clinic_id: str | None = None) -> dict[str, Any] | None:
-        if not hasattr(self, "_memory_prescriptions"):
-            self._memory_prescriptions = {}
-        rx = self._memory_prescriptions.get(rx_id)
+        rx = None
+        if not self._is_demo:
+            try:
+                params: dict[str, Any] = {"id": f"eq.{rx_id}"}
+                rows = self._select("prescriptions", params)
+                if rows:
+                    rx = rows[0]
+                    records = self._load_prescriptions()
+                    records[rx_id] = deepcopy(rx)
+                    self._save_prescriptions(records)
+            except Exception as e:
+                logger.error("Failed to fetch prescription %s from Supabase: %s", rx_id, e)
+                raise RuntimeError(f"Failed to fetch prescription from database: {e}") from e
+
+        if not rx:
+            records = self._load_prescriptions()
+            rx = records.get(rx_id)
+
         if rx:
             if clinic_id and rx.get("clinic_id") != clinic_id:
                 raise PermissionError("Access denied: prescription belongs to another clinic")
@@ -1187,10 +1273,25 @@ class SupabaseStore:
         return None
 
     def list_prescriptions(self, clinic_id: str, doctor_id: str | None = None) -> list[dict[str, Any]]:
-        if not hasattr(self, "_memory_prescriptions"):
-            self._memory_prescriptions = {}
+        if not self._is_demo:
+            try:
+                params = {"clinic_id": f"eq.{clinic_id}", "order": "created_at.desc"}
+                if doctor_id:
+                    params["doctor_id"] = f"eq.{doctor_id}"
+                sb_rows = self._select("prescriptions", params)
+                records = self._load_prescriptions()
+                for row in sb_rows:
+                    if row.get("id"):
+                        records[row["id"]] = row
+                self._save_prescriptions(records)
+                return [deepcopy(r) for r in sb_rows]
+            except Exception as e:
+                logger.error("Failed to list prescriptions from Supabase for clinic %s: %s", clinic_id, e)
+                raise RuntimeError(f"Failed to query prescriptions from database: {e}") from e
+
+        records = self._load_prescriptions()
         items = []
-        for rx in self._memory_prescriptions.values():
+        for rx in records.values():
             if rx.get("clinic_id") == clinic_id:
                 if not doctor_id or rx.get("doctor_id") == doctor_id:
                     items.append(deepcopy(rx))
@@ -1200,12 +1301,13 @@ class SupabaseStore:
     def approve_prescription(self, rx_id: str, clinic_id: str, approved_by_user_id: str) -> dict[str, Any]:
         """Section 4.3: Structural Doctor Approval Gate.
         Sets approved flag, records approved_at and approved_by, and mints reminder RX token.
+        Raises KeyError if prescription does not exist.
+        Raises PermissionError if prescription belongs to another clinic.
         """
-        rx = self.get_prescription(rx_id, clinic_id)
+        rx = self.get_prescription(rx_id, clinic_id=clinic_id)
         if not rx:
-            # If not in store yet, create minimal record
-            rx = self.add_prescription({"id": rx_id, "clinic_id": clinic_id, "doctor_id": approved_by_user_id})
-        
+            raise KeyError(f"Prescription '{rx_id}' not found")
+
         now = now_iso()
         rx["is_approved"] = True
         rx["status"] = "approved"
@@ -1215,24 +1317,45 @@ class SupabaseStore:
             rx["rx_token"] = f"RX-{uuid4().hex[:6].upper()}"
         rx["updated_at"] = now
 
-        if not hasattr(self, "_memory_prescriptions"):
-            self._memory_prescriptions = {}
-        self._memory_prescriptions[rx_id] = deepcopy(rx)
+        if not self._is_demo:
+            try:
+                res = self.client.patch(
+                    "/prescriptions",
+                    params={"id": f"eq.{rx_id}"},
+                    json={
+                        "is_approved": True,
+                        "status": "approved",
+                        "approved_at": now,
+                        "approved_by": approved_by_user_id,
+                        "rx_token": rx["rx_token"],
+                        "updated_at": now,
+                    }
+                )
+                if res.status_code >= 400:
+                    logger.error("Supabase patch prescription failed: %s %s", res.status_code, res.text)
+                    raise RuntimeError(f"Database error approving prescription: {res.status_code} {res.text}")
+            except Exception as e:
+                logger.error("Failed to approve prescription %s in Supabase: %s", rx_id, e)
+                raise RuntimeError(f"Failed to update prescription in database: {e}") from e
+
+        records = self._load_prescriptions()
+        records[rx_id] = deepcopy(rx)
+        self._save_prescriptions(records)
+
         return deepcopy(rx)
 
     def get_historical_prescriptions(self, clinic_id: str, doctor_id: str, diagnosis: str) -> list[dict[str, Any]]:
         """Section 6: Historical Prescription Suggestions.
         Scoped strictly to doctor and clinic. Returns previous approved prescriptions matching diagnosis.
         """
-        if not hasattr(self, "_memory_prescriptions"):
-            self._memory_prescriptions = {}
         if not diagnosis:
             return []
-        
+
+        all_rxs = self.list_prescriptions(clinic_id=clinic_id, doctor_id=doctor_id)
         diag_clean = diagnosis.lower().strip()
         matched_prescriptions = []
-        for rx in self._memory_prescriptions.values():
-            if rx.get("clinic_id") == clinic_id and rx.get("doctor_id") == doctor_id and rx.get("is_approved"):
+        for rx in all_rxs:
+            if rx.get("is_approved"):
                 rx_diagnoses = [str(d).lower() for d in (rx.get("diagnosis") or [])]
                 if any(diag_clean in d or d in diag_clean for d in rx_diagnoses):
                     matched_prescriptions.append(deepcopy(rx))
