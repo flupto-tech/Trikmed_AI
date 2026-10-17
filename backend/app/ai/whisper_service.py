@@ -1,6 +1,7 @@
 import os
 import subprocess
 import tempfile
+import time
 import logging
 from pathlib import Path
 
@@ -62,62 +63,78 @@ class WhisperService:
             logger.info(f"Whisper model '{model_name}' loaded and cached successfully.")
 
     def _validate_audio_file(self, audio_path: str) -> dict:
-        """Validate audio file using ffprobe. Returns diagnostics dict."""
+        """Fast validation of audio file without spawning unnecessary subprocesses."""
         try:
-            cmd = [
-                "ffprobe", "-v", "quiet", "-print_format", "json",
-                "-show_format", "-show_streams", audio_path
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            if result.returncode != 0:
-                return {"valid": False, "error": f"ffprobe failed: {result.stderr[:200]}"}
-
-            import json
-            info = json.loads(result.stdout)
-            fmt = info.get("format", {})
-            
-            # Chrome WebM blobs often lack duration headers. Don't fail if it's 0 or missing.
-            duration_str = fmt.get("duration")
-            duration = float(duration_str) if duration_str is not None else 0.0
-            
-            size_str = fmt.get("size")
-            size = int(size_str) if size_str is not None else 0
-
-            # If duration is explicitly provided and too short, fail. But if 0.0, we assume it's missing.
-            if duration > 0 and duration < 0.3:
-                return {"valid": False, "error": f"Audio too short: {duration:.2f}s (min 0.3s required)"}
-            
+            if not os.path.exists(audio_path):
+                return {"valid": False, "error": f"Audio file not found: {audio_path}"}
+            size = os.path.getsize(audio_path)
             if size < 500:
                 return {"valid": False, "error": f"Audio file too small: {size} bytes (likely corrupt or empty)"}
 
+            # Optional ffprobe validation if explicitly enabled via environment
+            if os.getenv("ASR_USE_FFPROBE", "false").lower() == "true":
+                cmd = [
+                    "ffprobe", "-v", "quiet", "-print_format", "json",
+                    "-show_format", "-show_streams", audio_path
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    import json
+                    info = json.loads(result.stdout)
+                    fmt = info.get("format", {})
+                    duration_str = fmt.get("duration")
+                    duration = float(duration_str) if duration_str is not None else 0.0
+                    if duration > 0 and duration < 0.3:
+                        return {"valid": False, "error": f"Audio too short: {duration:.2f}s (min 0.3s required)"}
+                    return {
+                        "valid": True,
+                        "duration_s": round(duration, 2),
+                        "size_bytes": size,
+                        "format": fmt.get("format_name", "unknown"),
+                    }
+
             return {
                 "valid": True,
-                "duration_s": round(duration, 2),
+                "duration_s": 0.0,
                 "size_bytes": size,
-                "format": fmt.get("format_name", "unknown"),
+                "format": Path(audio_path).suffix or "unknown",
             }
-        except FileNotFoundError:
-            logger.warning("ffprobe not found; skipping audio validation.")
-            return {"valid": True, "warning": "ffprobe not available"}
         except Exception as e:
             return {"valid": False, "error": str(e)}
 
-    def _convert_to_wav(self, input_path: str) -> str:
-        """Convert any audio format to 16kHz mono WAV, with loudness normalization."""
+    def _convert_to_wav(self, input_path: str) -> tuple[str, float]:
+        """
+        Convert any audio format to 16kHz mono 16-bit PCM WAV.
+        Uses single-pass conversion by default to avoid slow 2-pass loudnorm latency.
+        Returns (wav_path, conversion_latency_ms).
+        """
+        t0 = time.perf_counter()
         fd, wav_path = tempfile.mkstemp(suffix=".wav")
         os.close(fd)
+        use_loudnorm = os.getenv("ASR_USE_LOUDNORM", "false").lower() == "true"
         try:
-            cmd = [
-                "ffmpeg", "-y",
-                "-i", input_path,
-                "-ar", "16000",         
-                "-ac", "1",             
-                "-c:a", "pcm_s16le",    
-                "-af", "loudnorm",      
-                wav_path
-            ]
+            if use_loudnorm:
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-i", input_path,
+                    "-ar", "16000",
+                    "-ac", "1",
+                    "-c:a", "pcm_s16le",
+                    "-af", "loudnorm",
+                    wav_path
+                ]
+            else:
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-i", input_path,
+                    "-ar", "16000",
+                    "-ac", "1",
+                    "-c:a", "pcm_s16le",
+                    wav_path
+                ]
+
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-            if result.returncode != 0:
+            if result.returncode != 0 and use_loudnorm:
                 cmd_simple = [
                     "ffmpeg", "-y",
                     "-i", input_path,
@@ -131,15 +148,19 @@ class WhisperService:
                     logger.error(f"ffmpeg conversion failed: {result2.stderr[-400:]}")
                     raise RuntimeError(f"ffmpeg conversion failed: {result2.stderr[-400:]}")
                 logger.warning("loudnorm not available; converted without normalization")
-            return wav_path
+            elif result.returncode != 0:
+                logger.error(f"ffmpeg conversion failed: {result.stderr[-400:]}")
+                raise RuntimeError(f"ffmpeg conversion failed: {result.stderr[-400:]}")
+
+            conv_ms = (time.perf_counter() - t0) * 1000
+            return wav_path, conv_ms
         except FileNotFoundError:
             logger.error("ffmpeg not found on PATH. Please install ffmpeg.")
             raise RuntimeError("ffmpeg is required for audio conversion but was not found.")
 
-    def transcribe_audio(self, audio_path: str, language_hint: str | None = None) -> str:
+    def transcribe_audio_with_timings(self, audio_path: str, language_hint: str | None = None) -> tuple[str, dict[str, float]]:
         """
-        Transcribes the given audio file using the loaded Whisper model.
-        Converts to WAV first for maximum codec compatibility.
+        Transcribes the given audio file using faster-whisper and returns (transcript_text, timings_dict).
         """
         self._load_model()
 
@@ -153,7 +174,7 @@ class WhisperService:
 
         wav_path = None
         try:
-            wav_path = self._convert_to_wav(audio_path)
+            wav_path, conv_ms = self._convert_to_wav(audio_path)
 
             asr_language = None
             env_lang = os.getenv("ASR_LANGUAGE") or os.getenv("FASTER_WHISPER_LANGUAGE", "")
@@ -167,10 +188,12 @@ class WhisperService:
                 speech_pad_ms=int(os.getenv("ASR_VAD_SPEECH_PAD_MS", "400")),
             )
 
-            beam_size = int(os.getenv("ASR_BEAM_SIZE", "5"))
+            # Benchmark setting: beam_size=1 (greedy decoding) default for 3-5x lower latency
+            beam_size = int(os.getenv("ASR_BEAM_SIZE", "1"))
             temperature = float(os.getenv("ASR_TEMPERATURE", "0.0"))
             condition_on_previous = os.getenv("ASR_CONDITION_ON_PREVIOUS", "true").lower() == "true"
 
+            t_inf0 = time.perf_counter()
             segments, info = self._model.transcribe(
                 wav_path,
                 beam_size=beam_size,
@@ -188,6 +211,7 @@ class WhisperService:
                 transcript_parts.append(segment.text.strip())
 
             final_text = " ".join(p for p in transcript_parts if p).strip()
+            inference_ms = (time.perf_counter() - t_inf0) * 1000
 
             if not final_text:
                 logger.warning(f"Whisper returned empty transcript from audio file: {audio_path}")
@@ -199,12 +223,27 @@ class WhisperService:
                 info.duration,
                 len(final_text),
             )
-            return final_text
+
+            timings = {
+                "audio_conversion_ms": round(conv_ms, 1),
+                "stt_inference_ms": round(inference_ms, 1),
+                "duration_s": round(info.duration, 2),
+            }
+            return final_text, timings
         finally:
             if wav_path and os.path.exists(wav_path):
                 try:
                     os.remove(wav_path)
                 except OSError:
                     pass
+
+    def transcribe_audio(self, audio_path: str, language_hint: str | None = None) -> str:
+        """
+        Transcribes the given audio file using the loaded Whisper model.
+        Converts to WAV first for maximum codec compatibility.
+        """
+        text, _ = self.transcribe_audio_with_timings(audio_path, language_hint=language_hint)
+        return text
+
 
 whisper_service = WhisperService()

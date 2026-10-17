@@ -1,25 +1,39 @@
 'use client'
 import { useState, useRef, useEffect } from 'react'
-import { Mic, MicOff, Loader2, X, CheckCircle, AlertCircle } from 'lucide-react'
+import { Mic, MicOff, Loader2, X, CheckCircle, AlertCircle, Sparkles } from 'lucide-react'
 import api from '../../services/api'
 
 /**
- * VoiceButton — AI Voice Dictation
+ * Generate a standard UUID v4 for tracking recording sessions across async requests.
+ */
+function generateUUID() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID()
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+    const r = (Math.random() * 16) | 0
+    const v = c === 'x' ? r : (r & 0x3) | 0x8
+    return v.toString(16)
+  })
+}
+
+/**
+ * VoiceButton — AI Voice Dictation (Incremental + Reconciled Final)
  *
  * Flow:
- *   1. Doctor clicks → microphone turns on
- *   2. Browser SpeechRecognition provides a best-effort live preview
- *   3. Doctor clicks Stop → the recorded audio is transcribed on the server
- *   4. The verified transcript is structured into a prescription
- *   5. Parsed medicines/symptoms/diagnosis fill the form automatically
- *
- * Storage: the audio and transcript are sent only to the configured API for
- * this request. They are not stored by this component; the parsed result fills
- * the current prescription form fields.
+ *   1. Doctor clicks → microphone turns on, session UUID created.
+ *   2. Browser SpeechRecognition provides live transcript & final segments.
+ *   3. While doctor is still speaking (~every 5s or when sufficient new words arrive),
+ *      incremental structuring is debounced and sent to /ai/structure-transcript-incremental.
+ *   4. Results are surfaced progressively via onIncrementalUpdate (medicines flagged interim).
+ *   5. Doctor clicks Stop → MediaRecorder audio uploaded to /ai/voice-to-prescription for
+ *      the authoritative final reconciliation pass, finalizing medicines with CDCI validation.
+ *   6. Stale async responses from older recordings or previous sessions are safely ignored.
  */
 export default function VoiceButton({
   onTranscript,
   onPrescriptionParsed,
+  onIncrementalUpdate,
   patientName = '',
   patientAge = null,
   doctorName = '',
@@ -32,16 +46,24 @@ export default function VoiceButton({
   const [errorMsg, setErrorMsg] = useState('')
   const [showPanel, setShowPanel] = useState(false)
   const [result, setResult] = useState(null)
+  const [isIncrementalStructuring, setIsIncrementalStructuring] = useState(false)
+  const [incrementalCount, setIncrementalCount] = useState(0)
 
-  const mediaRecorderRef = useRef(null)
-  const mediaStreamRef   = useRef(null)
-  const audioChunksRef   = useRef([])
-  const timerRef         = useRef(null)
-  const recognitionRef   = useRef(null)
-  const isRecordingRef   = useRef(false)
-  const isStartingRef    = useRef(false)
-  const accumulatedRef   = useRef('')   // accumulated final transcript segments
-  const panelRef         = useRef(null)
+  const mediaRecorderRef       = useRef(null)
+  const mediaStreamRef         = useRef(null)
+  const audioChunksRef         = useRef([])
+  const timerRef               = useRef(null)
+  const recognitionRef         = useRef(null)
+  const isRecordingRef         = useRef(false)
+  const isStartingRef          = useRef(false)
+  const accumulatedRef         = useRef('')   // accumulated final transcript segments
+  const panelRef               = useRef(null)
+
+  // Incremental processing refs
+  const sessionIdRef           = useRef(null)
+  const lastStructuredTextRef  = useRef('')
+  const incrementalDebounceRef = useRef(null)
+  const inFlightRequestRef     = useRef(false)
 
   const sz = size === 'sm' ? 14 : 16
 
@@ -58,8 +80,6 @@ export default function VoiceButton({
     return () => document.removeEventListener('mousedown', h)
   }, [phase])
 
-  // Releasing the stream is important: otherwise the browser can keep the
-  // microphone locked after the panel is closed or the screen is changed.
   function releaseMicrophone() {
     mediaStreamRef.current?.getTracks().forEach(track => track.stop())
     mediaStreamRef.current = null
@@ -67,10 +87,68 @@ export default function VoiceButton({
 
   useEffect(() => () => {
     clearInterval(timerRef.current)
+    if (incrementalDebounceRef.current) clearTimeout(incrementalDebounceRef.current)
     isRecordingRef.current = false
     try { recognitionRef.current?.stop() } catch {}
     releaseMicrophone()
   }, [])
+
+  /**
+   * Send current accumulated transcript to backend for incremental structuring.
+   * Only runs if doctor is still recording, session matches, and there is meaningful new text.
+   */
+  async function triggerIncrementalStructuring(currentSessionId, text) {
+    const cleanText = (text || '').trim()
+    if (!cleanText || cleanText.length < 20) return
+    if (cleanText === lastStructuredTextRef.current) return
+    if (currentSessionId !== sessionIdRef.current || !isRecordingRef.current) return
+    if (inFlightRequestRef.current) return
+
+    inFlightRequestRef.current = true
+    setIsIncrementalStructuring(true)
+
+    try {
+      const payload = {
+        session_id: currentSessionId,
+        transcript: cleanText,
+        prev_transcript: lastStructuredTextRef.current,
+        patient_name: patientName || null,
+        patient_age: patientAge ? Number(patientAge) : null,
+        doctor_name: doctorName || null,
+        is_final: false,
+      }
+
+      const res = await api.post('/ai/structure-transcript-incremental', payload)
+
+      // Guard: if user stopped, changed recording, or session changed, discard stale response
+      if (sessionIdRef.current !== currentSessionId) {
+        return
+      }
+
+      if (res && !res.unchanged) {
+        lastStructuredTextRef.current = cleanText
+        setIncrementalCount(c => c + 1)
+        onIncrementalUpdate?.(res, false)
+      }
+    } catch (err) {
+      // Non-fatal for incremental updates: log warning and let user continue speaking
+      console.warn('Incremental structuring skipped or failed:', err?.message || err)
+    } finally {
+      inFlightRequestRef.current = false
+      setIsIncrementalStructuring(false)
+    }
+  }
+
+  function scheduleIncrementalStructuring(text) {
+    if (incrementalDebounceRef.current) {
+      clearTimeout(incrementalDebounceRef.current)
+    }
+    const currentSessionId = sessionIdRef.current
+    // Debounce ~1.5s after speech pause or ~5s cadence
+    incrementalDebounceRef.current = setTimeout(() => {
+      triggerIncrementalStructuring(currentSessionId, text)
+    }, 1500)
+  }
 
   async function startRecording() {
     if (isStartingRef.current || isRecordingRef.current) return
@@ -80,12 +158,15 @@ export default function VoiceButton({
     setFinalText('')
     accumulatedRef.current = ''
     audioChunksRef.current = []
+    lastStructuredTextRef.current = ''
+    sessionIdRef.current = generateUUID()
     setSeconds(0)
     setResult(null)
+    setIncrementalCount(0)
     setShowPanel(true)
     isRecordingRef.current = true
 
-    // ── 1. MediaRecorder (audio capture for backend) ───────────────────────
+    // ── 1. MediaRecorder (audio capture for backend final reconciliation) ──
     try {
       if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
         throw new Error('This browser does not support microphone recording.')
@@ -121,7 +202,7 @@ export default function VoiceButton({
       return
     }
 
-    // Browser speech recognition provides live preview & fallback transcript
+    // ── 2. Browser speech recognition for live text and incremental triggers ──
     const SpeechRecognition = typeof window !== 'undefined'
       ? (window.SpeechRecognition || window.webkitSpeechRecognition || null)
       : null
@@ -139,13 +220,22 @@ export default function VoiceButton({
             if (event.results[index].isFinal) finalSegments += text
             else interim += text
           }
-          if (finalSegments) accumulatedRef.current = `${accumulatedRef.current} ${finalSegments}`.trim()
+          if (finalSegments) {
+            accumulatedRef.current = `${accumulatedRef.current} ${finalSegments}`.trim()
+          }
           const combined = `${accumulatedRef.current} ${interim}`.trim()
           setLiveText(combined)
           onTranscript?.(combined)
+
+          // Trigger progressive structuring when final speech segments arrive or text length expands
+          if (accumulatedRef.current && accumulatedRef.current.length >= 20) {
+            scheduleIncrementalStructuring(accumulatedRef.current)
+          }
         }
         recognition.onerror = (event) => {
-          if (!['no-speech', 'aborted'].includes(event.error)) console.warn('Speech recognition preview unavailable:', event.error)
+          if (!['no-speech', 'aborted'].includes(event.error)) {
+            console.warn('Speech recognition preview unavailable:', event.error)
+          }
         }
         recognition.onend = () => {
           if (isRecordingRef.current) {
@@ -168,6 +258,9 @@ export default function VoiceButton({
   async function stopRecording() {
     if (isStartingRef.current) return
     clearInterval(timerRef.current)
+    if (incrementalDebounceRef.current) {
+      clearTimeout(incrementalDebounceRef.current)
+    }
     isRecordingRef.current = false
 
     // Stop recognition
@@ -179,6 +272,8 @@ export default function VoiceButton({
 
     setPhase('processing')
 
+    const activeSessionId = sessionIdRef.current
+
     try {
       const recorder = mediaRecorderRef.current
       if (!recorder || recorder.state === 'inactive') {
@@ -186,7 +281,7 @@ export default function VoiceButton({
       }
 
       // MediaRecorder emits its last chunk asynchronously. Waiting for `stop`
-      // prevents the previous empty-upload race that left the UI recording.
+      // prevents empty-upload race conditions.
       const audioBlob = await new Promise((resolve, reject) => {
         recorder.addEventListener('stop', () => {
           const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
@@ -214,242 +309,16 @@ export default function VoiceButton({
         res = await api.upload('/ai/voice-to-prescription', fd)
       } catch (uploadErr) {
         console.warn('Backend audio upload failed:', uploadErr)
-        throw new Error(uploadErr?.message || uploadErr?.detail || 'Voice transcription failed. Please try again.')
+        throw new Error(uploadErr?.message || uploadErr?.detail || 'Voice processing failed. Please retry dictation or enter details manually.')
       }
 
-      // If backend was unreachable or returned empty, build a client-side parsed draft
-      // Never build a clinical prescription from browser heuristics in a real
-      // session. The server is the single extraction/validation authority.
-      if (!res && liveTranscript && process.env.NODE_ENV === 'test') {
-        const text = liveTranscript
-        const lower = text.toLowerCase()
+      // Verify that this response still belongs to this session
+      if (sessionIdRef.current !== activeSessionId) {
+        return
+      }
 
-        // 1. UNIVERSAL SYMPTOM EXTRACTOR (Captures all spoken symptoms & severity)
-        const symptoms = []
-        const symptomRules = [
-          { pattern: /\b(chest pain|seene mein dard|chhati mein dard|seene me dard)\b/i, label: 'Chest pain' },
-          { pattern: /\b(saans phoolna|breathlessness|shortness of breath|dyspnea)\b/i, label: 'Breathlessness' },
-          { pattern: /\b(bhari sar dard|severe headache|tez sar dard)\b/i, label: 'Severe Headache' },
-          { pattern: /\b(sar dard|headache|sir dard|sar me dard)\b/i, label: 'Headache' },
-          { pattern: /\b(tej tapman|high fever|high temperature|tez bukhar)\b/i, label: 'High Fever' },
-          { pattern: /\b(tapman|bukhar|fever|taap)\b/i, label: 'Fever' },
-          { pattern: /\b(pet dard|stomach ache|abdominal pain|pet kharab|stomach pain)\b/i, label: 'Abdominal pain' },
-          { pattern: /\b(gala kharab|gale mein dard|throat pain|sore throat|kharash)\b/i, label: 'Sore throat' },
-          { pattern: /\b(khansi|cough|sardi|jukaam|cold|runny nose)\b/i, label: 'Cough & Cold' },
-          { pattern: /\b(chakkar|dizziness|vertigo)\b/i, label: 'Dizziness / Vertigo' },
-          { pattern: /\b(ghabrahat|anxiety|restlessness|palpitation)\b/i, label: 'Palpitation / Anxiety' },
-          { pattern: /\b(dast|diarrhea|loose motion)\b/i, label: 'Diarrhea' },
-          { pattern: /\b(vomiting|ulti|nausea)\b/i, label: 'Nausea & Vomiting' },
-          { pattern: /\b(sujan|swelling|edema)\b/i, label: 'Swelling' },
-          { pattern: /\b(khujli|itching|rash)\b/i, label: 'Skin Rash / Itching' },
-          { pattern: /\b(joint pain|body ache|badan dard|kamar dard|back pain)\b/i, label: 'Body ache / Pain' },
-        ]
-        for (const rule of symptomRules) {
-          if (rule.pattern.test(text) && !symptoms.includes(rule.label)) {
-            symptoms.push(rule.label)
-          }
-        }
-
-        // 2. UNIVERSAL DRUG & MEDICINE EXTRACTOR (Matches all brand names + open regex matches)
-        const extractedMeds = []
-        const seenNames = new Set()
-        const seenBases = new Set()
-
-        // A. Primary Dictionary of Indian Brands & Formulations
-        const DRUG_CATALOG = [
-          { match: /\b(nitro\s*glycerine|nitro\s*glycerin|nitroglycerin|nitroglycerine|nitrocontin)\b/i, name: 'Nitrocontin 2.6', defaultDose: '2.6mg', band: 'green', matched: 'Nitrocontin 2.6' },
-          { match: /\b(pant\s*40|pan\s*40|pantocid\s*40)\b/i, name: 'Pan 40', defaultDose: '40mg', band: 'green', matched: 'Pan 40' },
-          { match: /\b(diploma\s*mall|diploma\s*mole|diplomall|diclomol|diclo\s*mol)\b/i, name: 'Diclomol 200', defaultDose: '200mg', band: 'green', matched: 'Diclomol 200' },
-          { match: /\b(dolo|do\s*low|duo\s*low|dolow)\b/i, name: 'Dolo 650', defaultDose: '650mg', band: 'green', matched: 'Dolo 650' },
-          { match: /\b(crocin)\b/i, name: 'Crocin 650', defaultDose: '650mg', band: 'green', matched: 'Crocin 650' },
-          { match: /\b(calpol)\b/i, name: 'Calpol 500', defaultDose: '500mg', band: 'green', matched: 'Calpol 500' },
-          { match: /\b(augmentin|ogmentin|augmenten)\b/i, name: 'Augmentin 625', defaultDose: '625mg', band: 'green', matched: 'Augmentin 625' },
-          { match: /\b(clavam)\b/i, name: 'Clavam 625', defaultDose: '625mg', band: 'green', matched: 'Clavam 625' },
-          { match: /\b(pan\s*d|pantocid\s*dsr)\b/i, name: 'Pan D', defaultDose: '40mg+30mg', band: 'green', matched: 'Pan D' },
-          { match: /\b(pantocid)\b/i, name: 'Pantocid 40', defaultDose: '40mg', band: 'green', matched: 'Pantocid 40' },
-          { match: /\b(azithral|azithromycin|zithromax)\b/i, name: 'Azithral 500', defaultDose: '500mg', band: 'green', matched: 'Azithral 500' },
-          { match: /\b(montair\s*lc|levocetirizine)\b/i, name: 'Montair-LC', defaultDose: '5mg+10mg', band: 'green', matched: 'Montair-LC' },
-          { match: /\b(allegra|fexofenadine)\b/i, name: 'Allegra 120', defaultDose: '120mg', band: 'green', matched: 'Allegra 120' },
-          { match: /\b(ecosprin|aspirin)\b/i, name: 'Ecosprin 75', defaultDose: '75mg', band: 'green', matched: 'Ecosprin 75' },
-          { match: /\b(monocef)\b/i, name: 'Monocef 1g', defaultDose: '1g', band: 'green', matched: 'Monocef 1g' },
-          { match: /\b(combiflam)\b/i, name: 'Combiflam', defaultDose: '400mg+325mg', band: 'green', matched: 'Combiflam' },
-          { match: /\b(meftal\s*spas)\b/i, name: 'Meftal-Spas', defaultDose: '250mg+10mg', band: 'green', matched: 'Meftal-Spas' },
-          { match: /\b(taxim\s*o|cefixime)\b/i, name: 'Taxim-O 200', defaultDose: '200mg', band: 'green', matched: 'Taxim-O 200' },
-          { match: /\b(telma|telmisartan)\b/i, name: 'Telma 40', defaultDose: '40mg', band: 'green', matched: 'Telma 40' },
-          { match: /\b(glycomet|metformin)\b/i, name: 'Glycomet 500', defaultDose: '500mg', band: 'green', matched: 'Glycomet 500' },
-          { match: /\b(paracetamol)\b/i, name: 'Dolo 650', defaultDose: '650mg', band: 'yellow', matched: 'Dolo 650' },
-        ]
-
-        for (const item of DRUG_CATALOG) {
-          const itemBase = item.name.split(' ')[0].toLowerCase()
-          if (item.match.test(text) && !seenBases.has(itemBase) && !seenNames.has(item.name)) {
-            seenNames.add(item.name)
-            seenBases.add(itemBase)
-            
-            // Extract dosage specific to this medicine clause
-            let dose = item.defaultDose
-            const matchIndex = text.search(item.match)
-            let itemSnippet = lower
-            if (matchIndex !== -1) {
-              const followingText = text.substring(matchIndex)
-              // Bound snippet to next "aur", punctuation, or 120 chars to avoid leaking into next drug
-              const nextBoundary = followingText.search(/(?:aur\s+(?:gale|pet|patient|blood)|[.;\n]|$)/i)
-              itemSnippet = followingText.substring(0, nextBoundary > 20 ? nextBoundary : 120).toLowerCase()
-            }
-            const itemDoseMatch = itemSnippet.match(/(\d+\s*(?:mg|ml|gm|g|mcg|iu))/i)
-            if (itemDoseMatch) dose = itemDoseMatch[1].replace(/\s+/g, '')
-
-            let freq = '1-0-1'
-            let morn = true, aft = false, night = true
-            if (/(din mein do baar|do baar|do time|twice|subah shaam)/i.test(itemSnippet)) {
-              freq = '1-0-1'; morn = true; aft = false; night = true
-            } else if (/(din mein ek baar|ek baar|ek time|once|roz ek|subah khane|sirf subah)/i.test(itemSnippet)) {
-              freq = '1-0-0'; morn = true; aft = false; night = false
-            } else if (/(teen baar|teen time|thrice|subah dopahar raat)/i.test(itemSnippet)) {
-              freq = '1-1-1'; morn = true; aft = true; night = true
-            } else if (/(raat ko|sote waqt|night)/i.test(itemSnippet)) {
-              freq = '0-0-1'; morn = false; aft = false; night = true
-            }
-
-            let dur = '3 days'
-            const durMatch = itemSnippet.match(/(\d+)\s*(?:din|days|day)/i)
-            if (durMatch) dur = `${durMatch[1]} days`
-
-            let afterFood = true
-            if (/(khali pet|khane se pahle|khane ke pahle|bhookhe pet|empty stomach|before food)/i.test(itemSnippet)) {
-              afterFood = false
-            } else if (/(khane ke bad|khane ke baad|after food)/i.test(itemSnippet)) {
-              afterFood = true
-            }
-
-            extractedMeds.push({
-              name: item.name,
-              dose: dose,
-              frequency: freq,
-              duration: dur,
-              morning: morn,
-              afternoon: aft,
-              night: night,
-              after_food: afterFood,
-              validation_band: item.band,
-              validation_status: item.band === 'green' ? 'verified' : 'needs_confirmation',
-              matched_name: item.matched,
-            })
-          }
-        }
-
-        // B. Open-Vocabulary Drug Regex (Catches ANY unlisted medicine + dosage)
-        const openDrugRegex = /\b([A-Za-z][A-Za-z0-9\-_]{2,20})\s+(\d+\s*(?:mg|ml|gm|g|mcg)?)\b/gi
-        let match
-        while ((match = openDrugRegex.exec(text)) !== null) {
-          const rawDrugName = match[1]
-          const rawBase = rawDrugName.toLowerCase()
-          const rawDose = match[2].replace(/\s+/g, '')
-          if (!seenBases.has(rawBase) && !seenNames.has(rawDrugName) && !seenNames.has(rawBase) && !['fever', 'headache', 'pain', 'tablet', 'syrup', 'test', 'lap', 'lab', 'patient', 'liye', 'din'].includes(rawBase)) {
-            seenNames.add(rawDrugName)
-            seenBases.add(rawBase)
-            extractedMeds.push({
-              name: rawDrugName,
-              dose: rawDose,
-              frequency: '1-0-1',
-              duration: '3 days',
-              morning: true,
-              afternoon: false,
-              night: true,
-              after_food: true,
-              validation_band: 'yellow',
-              validation_status: 'needs_confirmation',
-              matched_name: rawDrugName,
-            })
-          }
-        }
-
-        // 3. UNIVERSAL INVESTIGATION & LAB TEST EXTRACTOR (Captures all spoken tests)
-        const investigations = []
-        const knownTestMap = [
-          { pattern: /\b(cbc|complete blood count|cbc lap test|cbc lab test|sidhi\s*si|seedhi\s*si)\b/i, name: 'CBC (Complete Blood Count)' },
-          { pattern: /\b(lipid profile|lipid test|cholesterol panel|cholesterol test)\b/i, name: 'Lipid Profile' },
-          { pattern: /\b(lft|liver function test)\b/i, name: 'Liver Function Test (LFT)' },
-          { pattern: /\b(kft|kidney function test|renal function)\b/i, name: 'Kidney Function Test (KFT)' },
-          { pattern: /\b(fasting sugar|blood sugar fasting|sugar test|rbs)\b/i, name: 'Blood Sugar Fasting' },
-          { pattern: /\b(pp sugar|blood sugar pp)\b/i, name: 'Blood Sugar PP' },
-          { pattern: /\b(hba1c)\b/i, name: 'HbA1c' },
-          { pattern: /\b(urine r\/?m|urine routine|urine culture)\b/i, name: 'Urine R/M' },
-          { pattern: /\b(thyroid|tsh|t3 t4 tsh)\b/i, name: 'Thyroid Profile (TSH)' },
-          { pattern: /\b(chest x-?ray|x-?ray chest)\b/i, name: 'Chest X-Ray' },
-          { pattern: /\b(ecg|electrocardiogram)\b/i, name: 'ECG' },
-          { pattern: /\b(ultrasound|usg abdomen|sonography)\b/i, name: 'Ultrasound Abdomen' },
-          { pattern: /\b(widal|typhoid test|typhoid widal)\b/i, name: 'Typhoid Widal' },
-          { pattern: /\b(dengue|dengue ns1)\b/i, name: 'Dengue NS1+IgM' },
-          { pattern: /\b(crp|c-reactive protein)\b/i, name: 'CRP' },
-          { pattern: /\b(vitamin d|vitamin d3)\b/i, name: 'Vitamin D3 (25-OH)' },
-          { pattern: /\b(vitamin b12|b12 test)\b/i, name: 'Vitamin B12' },
-          { pattern: /\b(serum calcium|calcium test)\b/i, name: 'Serum Calcium' },
-        ]
-        for (const testItem of knownTestMap) {
-          if (testItem.pattern.test(text) && !investigations.includes(testItem.name)) {
-            investigations.push(testItem.name)
-          }
-        }
-
-        // Open regex for any other custom test spoken: e.g. "... test karvana hai", "... scan karvana hai"
-        const customTestRegex = /\b([A-Za-z0-9\s\-\+\/]{2,25})\s+(?:lap\s+test|lab\s+test|test|jaanch|scan|culture|screen)\b/gi
-        let customTestMatch
-        while ((customTestMatch = customTestRegex.exec(text)) !== null) {
-          const testName = customTestMatch[1].trim()
-          if (testName.length > 2 && !['karna', 'karvana', 'karana', 'aur', 'uske', 'yeh', 'unhe', 'blood', 'sidhi', 'si'].includes(testName.toLowerCase())) {
-            const formatted = testName.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
-            if (!investigations.some(inv => inv.toLowerCase().includes(testName.toLowerCase()))) {
-              investigations.push(formatted)
-            }
-          }
-        }
-
-        // 4. UNIVERSAL DIETARY & LIFESTYLE INSTRUCTION EXTRACTOR (Captures all doctor advice)
-        const instruction_tags = []
-        const knownInstructions = [
-          { pattern: /\b(avoid oily and spicy food|oily and spicy food avoid|tel mirch masala avoid|oily food avoid|spicy food avoid|oily khana avoid|oily khana)\b/i, name: 'Avoid oily and spicy food' },
-          { pattern: /\b(bed rest|bed rest advised|aaram karna|rest karna)\b/i, name: 'Bed rest advised' },
-          { pattern: /\b(plenty of fluids|paani khoob peena|paani zyada|fluids|water intake)\b/i, name: 'Plenty of fluids (2-3 litres per day)' },
-          { pattern: /\b(low salt|kam namak|salt restriction)\b/i, name: 'Low salt diet' },
-          { pattern: /\b(avoid sweets|sugar avoid|mithai band|sugar band)\b/i, name: 'Diabetic diet — avoid sweets' },
-          { pattern: /\b(steam inhalation|bhap lena|bhaap)\b/i, name: 'Steam inhalation twice daily' },
-          { pattern: /\b(gargle|garare|namak paani)\b/i, name: 'Warm saline gargles' },
-          { pattern: /\b(walk 30 minutes|walk daily|tahalna)\b/i, name: 'Walk 30 minutes daily' },
-          { pattern: /\b(complete course|dawa ka pura course)\b/i, name: 'Take complete course of medicines' },
-        ]
-        for (const instr of knownInstructions) {
-          if (instr.pattern.test(text) && !instruction_tags.includes(instr.name)) {
-            instruction_tags.push(instr.name)
-          }
-        }
-
-        // Catch any custom spoken "avoid ..." or "... band karna" phrases
-        const customAvoidMatch = text.match(/\b([a-zA-Z\s]{3,30})\s+(?:avoid\s+karna|band\s+karna|se\s+parhez)\b/i)
-        if (customAvoidMatch) {
-          const avoidItem = `Avoid ${customAvoidMatch[1].trim()}`
-          if (!instruction_tags.includes(avoidItem)) instruction_tags.push(avoidItem)
-        }
-
-        let followUpVal = '3 days'
-        if (lower.includes('3 din') || lower.includes('3 days') || lower.includes('teen din')) followUpVal = '3 days'
-        else if (lower.includes('hafta') || lower.includes('week') || lower.includes('7 din')) followUpVal = '1 week'
-        else if (lower.includes('2 weeks') || lower.includes('do hafte')) followUpVal = '2 weeks'
-        else if (lower.includes('sos') || lower.includes('zaroorat padne par')) followUpVal = 'SOS'
-
-        res = {
-          patient_name: patientName || '',
-          age: patientAge || 0,
-          symptoms: symptoms.length ? symptoms : ['Fever & Headache'],
-          diagnosis: (symptoms.includes('High Fever') || symptoms.includes('Fever')) && symptoms.includes('Headache') ? 'Acute Febrile Illness / Headache' : 'General OPD Consultation',
-          medicines: extractedMeds,
-          investigations: investigations,
-          instruction_tags: instruction_tags,
-          follow_up: followUpVal,
-          notes: 'Follow up if no improvement. Avoid oily and spicy food, bed rest advised.',
-          transcript: text,
-          confidence: 0.95
-        }
+      if (!res) {
+        throw new Error('No speech was detected or processing failed. Please retry dictation or enter details manually.')
       }
 
       if (res?.transcript) {
@@ -459,17 +328,16 @@ export default function VoiceButton({
         onTranscript?.(res.transcript)
       }
 
-      if (!res) throw new Error('No speech was detected. Please try speaking again.')
-
       setResult(res)
       setPhase('done')
+      // Authoritative final reconciliation callback (reconciles interim items)
       onPrescriptionParsed?.(res)
     } catch (err) {
       releaseMicrophone()
       mediaRecorderRef.current = null
       console.error('AI voice error:', err)
       setPhase('error')
-      setErrorMsg(err?.message || 'Processing failed. Please try again.')
+      setErrorMsg(err?.message || 'Voice processing failed. Please retry dictation or enter details manually.')
     }
   }
 
@@ -481,12 +349,14 @@ export default function VoiceButton({
   function dismiss() {
     if (phase === 'recording') {
       clearInterval(timerRef.current)
+      if (incrementalDebounceRef.current) clearTimeout(incrementalDebounceRef.current)
       isRecordingRef.current = false
       try { recognitionRef.current?.stop() } catch {}
       try { mediaRecorderRef.current?.stop() } catch {}
       mediaRecorderRef.current = null
       releaseMicrophone()
     }
+    sessionIdRef.current = null
     isStartingRef.current = false
     setShowPanel(false)
     setPhase('idle')
@@ -496,7 +366,7 @@ export default function VoiceButton({
     setErrorMsg('')
   }
 
-  // ── Button label / icon ───────────────────────────────────────────────────
+  // ── Button styling per AGENTS.md ─────────────────────────────────────────
   const btnStyle = {
     display: 'inline-flex', alignItems: 'center', gap: '6px',
     padding: '6px 14px', borderRadius: '12px',
@@ -524,11 +394,11 @@ export default function VoiceButton({
         type="button"
         onClick={toggle}
         disabled={phase === 'processing'}
-        title={phase === 'recording' ? 'Stop & process dictation' : 'Start AI voice dictation'}
+        title={phase === 'recording' ? 'Stop & reconcile prescription' : 'Start AI voice dictation'}
         style={btnStyle}
       >
         {phase === 'processing' ? (
-          <><Loader2 size={sz} className="animate-spin" /><span>Processing…</span></>
+          <><Loader2 size={sz} className="animate-spin" /><span>Reconciling…</span></>
         ) : phase === 'recording' ? (
           <><MicOff size={sz} /><span>Stop ({seconds}s)</span></>
         ) : phase === 'done' ? (
@@ -544,7 +414,7 @@ export default function VoiceButton({
       {showPanel && (
         <div style={{
           position: 'absolute', top: 'calc(100% + 8px)', right: 0,
-          width: 360, zIndex: 500,
+          width: 380, zIndex: 500,
           background: '#fff', borderRadius: 12,
           border: '1.5px solid #E4E6EB',
           boxShadow: '0 8px 32px rgba(0,0,0,.14)',
@@ -564,19 +434,31 @@ export default function VoiceButton({
             {phase === 'recording' && (
               <>
                 <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#E84C3D', display: 'inline-block', animation: 'pulse 1s infinite' }} />
-                <span style={{ fontSize: 12, fontWeight: 700, color: '#E84C3D', flex: 1 }}>Recording… {seconds}s — click Stop when done</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#E84C3D', flex: 1 }}>
+                  Recording… {seconds}s
+                </span>
+                {isIncrementalStructuring && (
+                  <span style={{ fontSize: 11, color: '#0F2342', display: 'inline-flex', alignItems: 'center', gap: 4, background: '#FEF3C7', padding: '2px 6px', borderRadius: 6, fontWeight: 600 }}>
+                    <Loader2 size={10} className="animate-spin" /> Structuring…
+                  </span>
+                )}
+                {incrementalCount > 0 && !isIncrementalStructuring && (
+                  <span style={{ fontSize: 11, color: '#166534', display: 'inline-flex', alignItems: 'center', gap: 3, background: '#DCFCE7', padding: '2px 6px', borderRadius: 6, fontWeight: 600 }}>
+                    <Sparkles size={10} /> Live updated
+                  </span>
+                )}
               </>
             )}
             {phase === 'processing' && (
               <>
                 <Loader2 size={12} className="animate-spin" style={{ color: '#0F2342' }} />
-                <span style={{ fontSize: 12, fontWeight: 700, color: '#0F2342', flex: 1 }}>AI is structuring your prescription…</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#0F2342', flex: 1 }}>Finalizing & reconciling with CDCI…</span>
               </>
             )}
             {phase === 'done' && (
               <>
                 <CheckCircle size={12} color="#16A34A" />
-                <span style={{ fontSize: 12, fontWeight: 700, color: '#16A34A', flex: 1 }}>Prescription filled from voice ✓</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#16A34A', flex: 1 }}>Prescription filled & verified ✓</span>
               </>
             )}
             {phase === 'error' && (
@@ -585,16 +467,21 @@ export default function VoiceButton({
                 <span style={{ fontSize: 12, fontWeight: 700, color: '#DC2626', flex: 1 }}>Error</span>
               </>
             )}
-            <button onClick={dismiss} type="button"
+            <button onClick={dismiss} type="button" aria-label="Close voice panel"
               style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, display: 'flex', color: '#6B7A9A' }}>
               <X size={14} />
             </button>
           </div>
 
-          {/* Recording Status box */}
+          {/* Transcript box */}
           <div style={{ padding: '10px 14px' }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: '#6B7A9A', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              {phase === 'recording' ? 'Recording Status' : 'Transcript used'}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: '#6B7A9A', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                {phase === 'recording' ? 'Live Speech Recognition' : 'Transcript Used'}
+              </span>
+              {phase === 'recording' && (
+                <span style={{ fontSize: 10, color: '#9CA3AF' }}>Updates form every ~5s</span>
+              )}
             </div>
             <div style={{
               minHeight: 60, maxHeight: 120, overflowY: 'auto',
@@ -605,7 +492,7 @@ export default function VoiceButton({
             }}>
               {liveText || finalText || (
                 <span style={{ color: '#9CA3AF', fontStyle: 'italic' }}>
-                  {phase === 'recording' ? 'Start speaking… (speak in English or Hindi)' : 'No transcript captured'}
+                  {phase === 'recording' ? 'Start speaking… (e.g. "Paracetamol 500 subah shaam khana khane ke baad")' : 'No transcript captured'}
                 </span>
               )}
             </div>
@@ -621,7 +508,7 @@ export default function VoiceButton({
             {phase === 'done' && result && (
               <div style={{ marginTop: 10 }}>
                 <div style={{ fontSize: 11, fontWeight: 600, color: '#6B7A9A', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                  Added to prescription
+                  Reconciled Prescription Fields
                 </div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                   {result.symptoms?.length > 0 && (
@@ -658,11 +545,11 @@ export default function VoiceButton({
           {(phase === 'done' || phase === 'error') && (
             <div style={{ padding: '8px 14px', borderTop: '1px solid #E4E6EB', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button onClick={dismiss} type="button"
-                style={{ fontSize: 12, fontWeight: 600, padding: '5px 14px', borderRadius: 8, border: '1.5px solid #D3D1C7', background: '#fff', color: '#374151', cursor: 'pointer' }}>
+                style={{ fontSize: 12, fontWeight: 600, padding: '5px 14px', borderRadius: '12px', border: '1.5px solid #D3D1C7', background: '#fff', color: '#374151', cursor: 'pointer' }}>
                 Close
               </button>
               <button onClick={() => { dismiss(); setTimeout(startRecording, 100) }} type="button"
-                style={{ fontSize: 12, fontWeight: 600, padding: '5px 14px', borderRadius: 8, border: 'none', background: '#0F2342', color: '#fff', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                style={{ fontSize: 12, fontWeight: 600, padding: '5px 14px', borderRadius: '12px', border: 'none', background: '#0F2342', color: '#fff', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <Mic size={12} /> Dictate Again
               </button>
             </div>

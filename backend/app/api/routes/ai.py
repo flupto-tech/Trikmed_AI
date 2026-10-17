@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import time
+import asyncio
 import os
+import uuid as _uuid_module
 from typing import Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
@@ -109,14 +111,20 @@ async def transcribe_audio(
         filename = getattr(file, "filename", None) or "audio.wav"
 
         speech = get_speech_client()
-        transcript = speech.transcribe(audio_bytes, filename=filename, language_hint=language_hint)
+        if hasattr(speech, "transcribe_async"):
+            transcript = await speech.transcribe_async(audio_bytes, filename=filename, language_hint=language_hint)
+        else:
+            transcript = await asyncio.to_thread(speech.transcribe, audio_bytes, filename=filename, language_hint=language_hint)
 
         latency = (time.perf_counter() - t0) * 1000
+        timings = getattr(transcript, "timings", {}) or {}
+        audio_conv_ms = timings.get("audio_conversion_ms", 0.0)
+
         try:
             from app.services.ai_cost_logger import ai_cost_logger
             ai_cost_logger.log_speech_cost(
                 model=os.getenv("ASR_MODEL", os.getenv("OPENAI_TRANSCRIPTION_MODEL", "large-v3")),
-                duration_seconds=getattr(transcript, "duration_seconds", 0.0) or 5.0,
+                duration_seconds=getattr(transcript, "duration_seconds", 0.0) or 0.0,
                 latency_ms=latency,
             )
         except Exception:
@@ -127,46 +135,26 @@ async def transcribe_audio(
             "language": transcript.language,
             "confidence": transcript.confidence,
             "model": os.getenv("ASR_MODEL", os.getenv("OPENAI_TRANSCRIPTION_MODEL", "large-v3")),
-            "latency_ms": round(latency, 1)
+            "latency_ms": round(latency, 1),
+            "audio_conversion_ms": round(audio_conv_ms, 1),
+            "timings": {
+                "audio_conversion_ms": round(audio_conv_ms, 1),
+                "speech_to_text_ms": round(latency, 1),
+            }
         }
 
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
 
-@router.post("/structure-prescription")
-def structure_prescription(payload: StructureRequest) -> dict[str, Any]:
-    """Convert raw transcript into a validated structured prescription."""
-    transcript = payload.transcript.strip()
-    if not transcript:
-        raise HTTPException(status_code=400, detail="Transcript cannot be empty")
-
-    # Step 1: De-identification (Section 12)
-    scrubbed = DeIdentifier.scrub_text(
-        transcript,
-        patient_name=payload.patient_name,
-        doctor_name=payload.doctor_name
-    )
-
-    # Do not pre-correct the transcript. RAG validates extracted spoken terms
-    # afterwards; modifying the input here was the source of hallucinated drugs.
-    t0 = time.perf_counter()
-    llm = get_llm_client()
-    try:
-        structured: StructuredPrescriptionSchema = llm.complete(
-            system=_build_system_prompt(),
-            user=scrubbed,
-            schema=StructuredPrescriptionSchema
-        )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"AI prescription structuring service failed: {str(exc)}. Please enter details manually."
-        )
-    llm_latency = (time.perf_counter() - t0) * 1000
-
-
-    # Step 3: Re-attach local patient identity (Section 12.1)
+def _process_structured_prescription(
+    structured: StructuredPrescriptionSchema,
+    transcript: str,
+    payload: StructureRequest,
+    llm_latency: float,
+    t_start: float
+) -> dict[str, Any]:
+    """Helper to attach identity, apply CDCI & lab validations, and attach timing metrics."""
     result_dict = structured.model_dump()
     result_dict["raw_transcript"] = transcript
     if isinstance(result_dict.get("follow_up"), str):
@@ -178,12 +166,12 @@ def structure_prescription(payload: StructureRequest) -> dict[str, Any]:
         result_dict["age"] = payload.patient_age
 
     # Step 4: 3-Band Drug Safety Layer (Section 5)
+    t_val0 = time.perf_counter()
     validated_medicines = []
     has_unverified = False
 
     for med in result_dict.get("medicines", []):
         raw_name = (med.get("spoken_name") or med.get("name") or "").strip()
-        # Reject an LLM-created entity. Do not try to recover it by asking RAG.
         if not raw_name or raw_name.casefold() not in transcript.casefold():
             warnings.append(f"Dropped unsupported medicine extraction: {raw_name or 'empty name'}")
             continue
@@ -198,18 +186,16 @@ def structure_prescription(payload: StructureRequest) -> dict[str, Any]:
             "proposed_generic_name": val.get("generic_name"),
             "match_method": val.get("method"),
             "validation_score": val["score"],
-            "validation_band": val["band"],      # "green", "yellow", "red"
-            "validation_status": val["status"],  # "verified", "needs_confirmation", "unverified"
+            "validation_band": val["band"],
+            "validation_status": val["status"],
             "auto_corrected": val["auto_corrected"],
-            "validation_reason": val.get("reason"),     # why green/yellow/red, for the UI
-            "candidates": val.get("candidates", []),     # similar brand names (never pre-selected)
-            "options": val.get("options", []),           # strengths/forms for the doctor to pick
+            "validation_reason": val.get("reason"),
+            "candidates": val.get("candidates", []),
+            "options": val.get("options", []),
             "form": val.get("form"),
             "cdci_code": val.get("cdci_code"),
-
         }
 
-        # Only exact/high-confidence fuzzy validation may set a canonical name.
         if val["band"] == "green" and val["matched_name"]:
             med_entry["name"] = val["matched_name"]
         else:
@@ -223,20 +209,18 @@ def structure_prescription(payload: StructureRequest) -> dict[str, Any]:
     result_dict["medicines"] = validated_medicines
     result_dict["has_unverified_items"] = has_unverified
 
-    # Step 5: Lab Investigations Validation Layer (Section 4 + Lab Tests Catalog)
+    # Step 5: Lab Investigations Validation Layer
     raw_investigations = result_dict.get("investigations", [])
     validated_investigations = []
     standardized_investigations = []
     seen_test_names = set()
 
-    # Process tests returned by LLM
     for inv in raw_investigations:
         raw_test = str(inv.get("spoken_name") if isinstance(inv, dict) else inv).strip()
         if not raw_test or raw_test.casefold() not in transcript.casefold():
             warnings.append(f"Dropped unsupported investigation extraction: {raw_test or 'empty name'}")
             continue
         val = drug_validator.validate_lab_test(raw_test)
-        # Candidates are suggestions only; unknown spoken tests stay unchanged.
         tname = val["matched_name"] if val["band"] == "green" else raw_test
         if tname not in seen_test_names:
             seen_test_names.add(tname)
@@ -253,7 +237,6 @@ def structure_prescription(payload: StructureRequest) -> dict[str, Any]:
                 "validation_status": val["status"],
             })
 
-    # Supplement with any spoken lab tests detected directly in dictation
     spoken_tests = drug_validator.extract_lab_tests(transcript)
     for st in spoken_tests:
         tname = st["matched_name"]
@@ -271,13 +254,85 @@ def structure_prescription(payload: StructureRequest) -> dict[str, Any]:
                 "validation_status": st["status"],
             })
 
+    val_latency = (time.perf_counter() - t_val0) * 1000
+
     result_dict["investigations"] = standardized_investigations
     result_dict["validated_investigations"] = validated_investigations
     result_dict["extraction_warnings"] = warnings
     result_dict["llm_latency_ms"] = round(llm_latency, 1)
-
+    result_dict["validation_latency_ms"] = round(val_latency, 1)
+    result_dict["db_logging_latency_ms"] = 0.0
+    result_dict["total_structure_latency_ms"] = round((time.perf_counter() - t_start) * 1000, 1)
     return result_dict
 
+
+@router.post("/structure-prescription")
+def structure_prescription(payload: StructureRequest) -> dict[str, Any]:
+    """Convert raw transcript into a validated structured prescription."""
+    transcript = payload.transcript.strip()
+    if not transcript:
+        raise HTTPException(status_code=400, detail="Transcript cannot be empty")
+
+    t_start = time.perf_counter()
+    scrubbed = DeIdentifier.scrub_text(
+        transcript,
+        patient_name=payload.patient_name,
+        doctor_name=payload.doctor_name
+    )
+
+    t0 = time.perf_counter()
+    llm = get_llm_client()
+    try:
+        structured: StructuredPrescriptionSchema = llm.complete(
+            system=_build_system_prompt(),
+            user=scrubbed,
+            schema=StructuredPrescriptionSchema
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"AI prescription structuring service failed: {str(exc)}. Please enter details manually."
+        )
+    llm_latency = (time.perf_counter() - t0) * 1000
+    return _process_structured_prescription(structured, transcript, payload, llm_latency, t_start)
+
+
+async def structure_prescription_async(payload: StructureRequest) -> dict[str, Any]:
+    """Asynchronous non-blocking prescription structuring."""
+    transcript = payload.transcript.strip()
+    if not transcript:
+        raise HTTPException(status_code=400, detail="Transcript cannot be empty")
+
+    t_start = time.perf_counter()
+    scrubbed = DeIdentifier.scrub_text(
+        transcript,
+        patient_name=payload.patient_name,
+        doctor_name=payload.doctor_name
+    )
+
+    t0 = time.perf_counter()
+    llm = get_llm_client()
+    try:
+        if hasattr(llm, "complete_async"):
+            structured: StructuredPrescriptionSchema = await llm.complete_async(
+                system=_build_system_prompt(),
+                user=scrubbed,
+                schema=StructuredPrescriptionSchema
+            )
+        else:
+            structured = await asyncio.to_thread(
+                llm.complete,
+                system=_build_system_prompt(),
+                user=scrubbed,
+                schema=StructuredPrescriptionSchema
+            )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"AI prescription structuring service failed: {str(exc)}. Please enter details manually."
+        )
+    llm_latency = (time.perf_counter() - t0) * 1000
+    return _process_structured_prescription(structured, transcript, payload, llm_latency, t_start)
 
 
 @router.post("/voice-to-prescription")
@@ -289,11 +344,12 @@ async def voice_to_prescription(
     doctor_name: str | None = Form(None),
     language_hint: str = Form("en-IN")
 ) -> dict[str, Any]:
-    """End-to-end voice to structured validated prescription."""
+    """End-to-end voice to structured validated prescription with stage-level timing instrumentation."""
+    total_t0 = time.perf_counter()
     transcript_text = (transcript or "").strip()
     transcribe_latency = 0.0
+    audio_conversion_latency = 0.0
 
-    # 1. Transcribe audio using Whisper with medical prompt biasing whenever file is uploaded
     if file:
         try:
             transcribe_res = await transcribe_audio(file=file, language_hint=language_hint)
@@ -301,26 +357,171 @@ async def voice_to_prescription(
             if server_text:
                 transcript_text = server_text
                 transcribe_latency = transcribe_res.get("latency_ms", 0.0)
+                audio_conversion_latency = transcribe_res.get("audio_conversion_ms", 0.0)
         except Exception as e:
-            # Fall back to client-provided transcript if server audio transcription fails
             if not transcript_text:
                 raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
 
     if not transcript_text:
         raise HTTPException(status_code=400, detail="No speech or transcript was detected. Please try again.")
 
-    # 2. Structure & Validate with LLM
+    def _clean_val(v):
+        from fastapi.params import Form as FormParam
+        if isinstance(v, FormParam):
+            return v.default
+        return v
+
+    p_name = _clean_val(patient_name)
+    p_age = _clean_val(patient_age)
+    d_name = _clean_val(doctor_name)
+
     struct_req = StructureRequest(
         transcript=transcript_text,
-        patient_name=patient_name,
-        patient_age=patient_age,
-        doctor_name=doctor_name
+        patient_name=str(p_name) if p_name is not None else None,
+        patient_age=int(p_age) if p_age is not None else None,
+        doctor_name=str(d_name) if d_name is not None else None
     )
-    res = structure_prescription(struct_req)
+    res = await structure_prescription_async(struct_req)
+    total_latency = (time.perf_counter() - total_t0) * 1000
+
+    ai_struct_latency = res.get("llm_latency_ms", 0.0)
+    med_val_latency = res.get("validation_latency_ms", 0.0)
+    db_log_latency = res.get("db_logging_latency_ms", 0.0)
+
     res["transcript"] = transcript_text
     res["raw_transcript"] = transcript_text
     res["asr_model"] = os.getenv("ASR_MODEL", os.getenv("OPENAI_TRANSCRIPTION_MODEL", "large-v3"))
-    res["transcribe_latency_ms"] = transcribe_latency
-    res["total_latency_ms"] = round(transcribe_latency + res.get("llm_latency_ms", 0.0), 1)
+    res["transcribe_latency_ms"] = round(transcribe_latency, 1)
+    res["audio_conversion_latency_ms"] = round(audio_conversion_latency, 1)
+    res["total_latency_ms"] = round(total_latency, 1)
+
+    res["timings"] = {
+        "audio_conversion_ms": round(audio_conversion_latency, 1),
+        "speech_to_text_ms": round(transcribe_latency, 1),
+        "ai_structuring_ms": round(ai_struct_latency, 1),
+        "medicine_validation_ms": round(med_val_latency, 1),
+        "database_logging_ms": round(db_log_latency, 1),
+        "total_response_ms": round(total_latency, 1),
+    }
     return res
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Incremental structuring endpoint — Phase 3
+#
+# NOTE: This endpoint operates on browser SpeechRecognition final-segment text.
+# It is NOT true audio streaming. The caller sends growing accumulated text
+# (transcript so far) and we structure it while the doctor is still dictating.
+# The full audio blob sent at Stop is still the authoritative source for the
+# final server-side STT pass.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class IncrementalStructureRequest(BaseModel):
+    """Request body for the incremental prescription structuring endpoint."""
+
+    session_id: str = Field(
+        ...,
+        description="UUID generated by the frontend at recording-start. Used to "
+        "discard stale responses from a previous recording session.",
+    )
+    transcript: str = Field(
+        ...,
+        description="Full accumulated transcript so far (not just the new delta).",
+    )
+    prev_transcript: str = Field(
+        default="",
+        description="Last transcript value that was already sent. "
+        "If transcript == prev_transcript the server returns unchanged=True "
+        "without calling the LLM.",
+    )
+    patient_name: str | None = None
+    patient_age: int | None = None
+    doctor_name: str | None = None
+    is_final: bool = Field(
+        default=False,
+        description="True when the doctor has pressed Stop and this is the "
+        "final reconciliation pass.",
+    )
+
+
+_MIN_INCREMENTAL_CHARS = 20  # ignore bursts shorter than this
+
+
+@router.post("/structure-transcript-incremental")
+async def structure_transcript_incremental(
+    payload: IncrementalStructureRequest,
+) -> dict[str, Any]:
+    """
+    Incrementally structure an in-progress voice transcript.
+
+    The frontend calls this while the doctor is still dictating (every ~5 s
+    based on SpeechRecognition final-segment boundaries). It also calls it
+    once more with is_final=True after Stop for the authoritative
+    reconciliation pass.
+
+    Session IDs prevent stale async responses from overwriting a newer recording.
+    """
+    t_total = time.perf_counter()
+
+    # ── Validate session_id ──────────────────────────────────────────────────
+    raw_sid = (payload.session_id or "").strip()
+    if not raw_sid:
+        raise HTTPException(status_code=400, detail="session_id is required")
+    try:
+        _uuid_module.UUID(raw_sid)  # must be a valid UUID
+    except ValueError:
+        raise HTTPException(status_code=400, detail="session_id must be a valid UUID")
+
+    # ── Validate transcript ──────────────────────────────────────────────────
+    transcript = (payload.transcript or "").strip()
+    if not transcript:
+        raise HTTPException(status_code=400, detail="transcript cannot be empty")
+
+    if len(transcript) < _MIN_INCREMENTAL_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"transcript too short (min {_MIN_INCREMENTAL_CHARS} chars); "
+            "speak more before structuring.",
+        )
+
+    # ── Delta detection — skip LLM if nothing new ────────────────────────────
+    prev = (payload.prev_transcript or "").strip()
+    if transcript == prev:
+        return {
+            "session_id": raw_sid,
+            "unchanged": True,
+            "is_final": payload.is_final,
+            "total_latency_ms": round((time.perf_counter() - t_total) * 1000, 1),
+        }
+
+    # ── Structure via the existing async helper ──────────────────────────────
+    struct_req = StructureRequest(
+        transcript=transcript,
+        patient_name=payload.patient_name,
+        patient_age=payload.patient_age,
+        doctor_name=payload.doctor_name,
+    )
+
+    try:
+        result = await structure_prescription_async(struct_req)
+    except HTTPException:
+        raise  # propagate 400/502 as-is; never fabricate a fallback
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Incremental structuring failed: {exc}. Please continue dictating.",
+        )
+
+    total_latency = (time.perf_counter() - t_total) * 1000
+
+    result["session_id"] = raw_sid
+    result["unchanged"] = False
+    result["is_final"] = payload.is_final
+    result["transcript"] = transcript
+    result["raw_transcript"] = transcript
+    result["total_latency_ms"] = round(total_latency, 1)
+    result.setdefault("timings", {})["total_response_ms"] = round(total_latency, 1)
+
+    return result
+
 

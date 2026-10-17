@@ -63,7 +63,12 @@ export default function MedicineRow({ medicine, doctorId='dr001', onChange, onRe
           {medicine.isCustom && (
             <span style={{ fontSize:10, background:'#EFF6FF', color:C.blue, padding:'1px 6px', borderRadius:4, marginLeft:6, fontWeight:600 }}>Custom</span>
           )}
-          {medicine.validation_band === 'green' && (
+          {medicine.isInterim && (
+            <span style={{ fontSize:10, background:'#FEF3C7', color:'#B45309', border:'1px solid #FDE68A', padding:'2px 8px', borderRadius:6, marginLeft:6, fontWeight:600, display:'inline-flex', alignItems:'center', gap:3 }}>
+              ⚡ Live dictation (interim)
+            </span>
+          )}
+          {medicine.validation_band === 'green' && !medicine.isInterim && (
             <span style={{ fontSize:10, background:'#DCFCE7', color:'#166534', border:'1px solid #BBF7D0', padding:'2px 8px', borderRadius:6, marginLeft:6, fontWeight:600, display:'inline-flex', alignItems:'center', gap:3 }}>
               ✓ Verified
             </span>

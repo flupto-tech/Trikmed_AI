@@ -6,6 +6,7 @@ import os
 import re
 import tempfile
 import time
+import asyncio
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
 import httpx
@@ -19,14 +20,17 @@ class Transcript(BaseModel):
     language: str = "hi-IN"
     confidence: float = 1.0
     duration_seconds: float = 0.0
+    timings: dict[str, float] = Field(default_factory=dict)
 
 
 class SpeechClient(Protocol):
     def transcribe(self, audio: bytes, filename: str = "audio.wav", language_hint: str | None = None) -> Transcript: ...
+    async def transcribe_async(self, audio: bytes, filename: str = "audio.wav", language_hint: str | None = None) -> Transcript: ...
 
 
 class LLMClient(Protocol):
     def complete(self, system: str, user: str, schema: type[T]) -> T: ...
+    async def complete_async(self, system: str, user: str, schema: type[T]) -> T: ...
 
 
 # ── De-identification Layer (Section 12) ──────────────────────────────────────
@@ -89,10 +93,44 @@ class GroqWhisperSpeechClient:
             if resp.status_code != 200:
                 raise RuntimeError(f"Groq Whisper transcription failed: {resp.status_code} - {resp.text}")
             res_json = resp.json()
+            latency = (time.perf_counter() - t0) * 1000
             return Transcript(
                 text=res_json.get("text", "").strip(),
                 language=language_hint or "hi-IN",
-                confidence=0.95
+                confidence=0.95,
+                timings={"speech_to_text_ms": round(latency, 1)}
+            )
+
+    async def transcribe_async(self, audio: bytes, filename: str = "audio.wav", language_hint: str | None = None) -> Transcript:
+        if not self.api_key:
+            return await LocalStubSpeechClient().transcribe_async(audio, filename=filename, language_hint=language_hint)
+
+        url = "https://api.groq.com/openai/v1/audio/transcriptions"
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        data = {
+            "model": "whisper-large-v3-turbo",
+            "temperature": "0.0",
+            "response_format": "json",
+            "prompt": INDIAN_CLINICAL_PROMPT,
+        }
+        if language_hint:
+            data["language"] = language_hint.split("-")[0]
+
+        mime_type = mimetypes.guess_type(filename)[0] or "audio/wav"
+        files = {"file": (filename, audio, mime_type)}
+
+        t0 = time.perf_counter()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, headers=headers, data=data, files=files)
+            if resp.status_code != 200:
+                raise RuntimeError(f"Groq Whisper transcription failed: {resp.status_code} - {resp.text}")
+            res_json = resp.json()
+            latency = (time.perf_counter() - t0) * 1000
+            return Transcript(
+                text=res_json.get("text", "").strip(),
+                language=language_hint or "hi-IN",
+                confidence=0.95,
+                timings={"speech_to_text_ms": round(latency, 1)}
             )
 
 
@@ -130,7 +168,48 @@ class OpenAITranscriptionClient:
             text = result.get("text", "").strip()
             if not text:
                 raise RuntimeError("No speech was detected. Please speak closer to the microphone and try again.")
-            return Transcript(text=text, language=language_hint or "en-IN", confidence=0.95)
+            latency = (time.perf_counter() - t0) * 1000
+            return Transcript(
+                text=text,
+                language=language_hint or "en-IN",
+                confidence=0.95,
+                timings={"speech_to_text_ms": round(latency, 1)}
+            )
+
+    async def transcribe_async(self, audio: bytes, filename: str = "audio.wav", language_hint: str | None = None) -> Transcript:
+        if not self.api_key:
+            return await LocalStubSpeechClient().transcribe_async(audio, filename=filename, language_hint=language_hint)
+
+        data: dict[str, str] = {
+            "model": os.getenv("OPENAI_TRANSCRIPTION_MODEL", "whisper-1"),
+            "prompt": INDIAN_CLINICAL_PROMPT,
+        }
+        if language_hint:
+            data["language"] = language_hint.split("-")[0]
+
+        mime_type = mimetypes.guess_type(filename)[0] or "audio/webm"
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        t0 = time.perf_counter()
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/audio/transcriptions",
+                headers=headers,
+                data=data,
+                files={"file": (filename, audio, mime_type)},
+            )
+            if resp.status_code != 200:
+                raise RuntimeError(f"OpenAI transcription failed: {resp.status_code} - {resp.text}")
+            result = resp.json()
+            text = result.get("text", "").strip()
+            if not text:
+                raise RuntimeError("No speech was detected. Please speak closer to the microphone and try again.")
+            latency = (time.perf_counter() - t0) * 1000
+            return Transcript(
+                text=text,
+                language=language_hint or "en-IN",
+                confidence=0.95,
+                timings={"speech_to_text_ms": round(latency, 1)}
+            )
 
 
 class OpenAILLMClient:
@@ -158,6 +237,63 @@ class OpenAILLMClient:
             headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
             with httpx.Client(timeout=45.0) as client:
                 resp = client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+                latency = (time.perf_counter() - t0) * 1000
+                if resp.status_code == 200:
+                    result = resp.json()
+                    usage = result.get("usage", {})
+                    from app.services.ai_cost_logger import ai_cost_logger
+                    ai_cost_logger.log_llm_cost(
+                        model=model_name,
+                        prompt_tokens=usage.get("prompt_tokens", max(1, len(user) // 4)),
+                        completion_tokens=usage.get("completion_tokens", 50),
+                        latency_ms=latency,
+                    )
+                    content = result["choices"][0]["message"]["content"]
+                    parsed_json = json.loads(content)
+                    return schema.model_validate(parsed_json)
+                if resp.status_code != 200:
+                    from app.services.ai_cost_logger import ai_cost_logger
+                    ai_cost_logger.log_llm_cost(
+                        model=model_name,
+                        prompt_tokens=max(1, len(user) // 4),
+                        completion_tokens=0,
+                        latency_ms=latency,
+                        success=False,
+                    )
+                    raise RuntimeError(f"OpenAI API failed ({resp.status_code}): {resp.text[:160]}")
+        except Exception as err:
+            try:
+                from app.services.ai_cost_logger import ai_cost_logger
+                ai_cost_logger.log_llm_cost(
+                    model=os.getenv("OPENAI_LLM_MODEL", "gpt-4o-mini"),
+                    prompt_tokens=max(1, len(user) // 4),
+                    completion_tokens=0,
+                    latency_ms=(time.perf_counter() - t0) * 1000 if 't0' in locals() else 0.0,
+                    success=False,
+                )
+            except Exception:
+                pass
+            raise RuntimeError(f"OpenAI structuring service failed: {err}")
+
+    async def complete_async(self, system: str, user: str, schema: type[T]) -> T:
+        if not self.api_key:
+            raise RuntimeError("OPENAI_API_KEY is not configured")
+
+        try:
+            t0 = time.perf_counter()
+            model_name = os.getenv("OPENAI_LLM_MODEL", "gpt-4o-mini")
+            payload = {
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": f"{system}\n\nYou must respond strictly with valid JSON conforming to the schema."},
+                    {"role": "user", "content": user},
+                ],
+                "response_format": {"type": "json_object"},
+                "temperature": 0.1,
+            }
+            headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                resp = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
                 latency = (time.perf_counter() - t0) * 1000
                 if resp.status_code == 200:
                     result = resp.json()
@@ -279,6 +415,81 @@ class GeminiLLMClient:
 
         raise RuntimeError(f"Gemini structuring service failed across all attempted models. Last error: {last_error}")
 
+    async def complete_async(self, system: str, user: str, schema: type[T]) -> T:
+        if not self.api_key:
+            raise RuntimeError("GEMINI_API_KEY is not configured")
+
+        models_to_try = [
+            os.getenv("GEMINI_MODEL", "gemini-flash-latest"),
+            "gemini-flash-latest",
+            "gemini-3.8-flash",
+            "gemini-3.1-flash-lite",
+        ]
+
+        json_schema = json.dumps(schema.model_json_schema(), indent=2)
+        system_prompt = f"{system}\n\nYou must respond strictly with a valid JSON object adhering to this JSON Schema:\n{json_schema}"
+        payload = {
+            "system_instruction": {"parts": [{"text": system_prompt}]},
+            "contents": [{"parts": [{"text": user}]}],
+            "generationConfig": {
+                "response_mime_type": "application/json",
+                "temperature": 0.1
+            }
+        }
+
+        last_error = None
+        for model_name in models_to_try:
+            try:
+                t0 = time.perf_counter()
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.api_key}"
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.post(url, json=payload)
+                    latency = (time.perf_counter() - t0) * 1000
+                    if resp.status_code == 200:
+                        res_data = resp.json()
+                        usage = res_data.get("usageMetadata", {})
+                        from app.services.ai_cost_logger import ai_cost_logger
+                        ai_cost_logger.log_llm_cost(
+                            model=model_name,
+                            prompt_tokens=usage.get("promptTokenCount", max(1, len(user) // 4)),
+                            completion_tokens=usage.get("candidatesTokenCount", 50),
+                            latency_ms=latency,
+                        )
+                        raw_text = res_data["candidates"][0]["content"]["parts"][0]["text"]
+                        parsed_json = json.loads(raw_text)
+                        list_fields = ["symptoms","medicines","investigations","instruction_tags","advice","warnings","extraction_warnings","follow_up"]
+                        for field in list_fields:
+                            if parsed_json.get(field) is None:
+                                parsed_json[field] = []
+                        return schema.model_validate(parsed_json)
+                    last_error = f"Model {model_name} returned {resp.status_code}: {resp.text[:120]}"
+                    try:
+                        from app.services.ai_cost_logger import ai_cost_logger
+                        ai_cost_logger.log_llm_cost(
+                            model=model_name,
+                            prompt_tokens=max(1, len(user) // 4),
+                            completion_tokens=0,
+                            latency_ms=latency,
+                            success=False,
+                        )
+                    except Exception:
+                        pass
+            except Exception as e:
+                last_error = f"Model {model_name} error: {e}"
+                try:
+                    from app.services.ai_cost_logger import ai_cost_logger
+                    ai_cost_logger.log_llm_cost(
+                        model=model_name,
+                        prompt_tokens=max(1, len(user) // 4),
+                        completion_tokens=0,
+                        latency_ms=(time.perf_counter() - t0) * 1000 if 't0' in locals() else 0.0,
+                        success=False,
+                    )
+                except Exception:
+                    pass
+
+        raise RuntimeError(f"Gemini structuring service failed across all attempted models. Last error: {last_error}")
+
 
 # ── Dynamic Clinical Heuristic Parser & Fallback ──────────────────────────────
 
@@ -291,6 +502,9 @@ class LocalStubSpeechClient:
             duration_seconds=1.0,
         )
 
+    async def transcribe_async(self, audio: bytes, filename: str = "audio.wav", language_hint: str | None = None) -> Transcript:
+        return self.transcribe(audio, filename=filename, language_hint=language_hint)
+
 
 
 class FasterWhisperSpeechClient:
@@ -302,15 +516,24 @@ class FasterWhisperSpeechClient:
             handle.write(audio)
             temp_path = handle.name
         try:
-            text = whisper_service.transcribe_audio(temp_path)
+            text, timings = whisper_service.transcribe_audio_with_timings(temp_path, language_hint=language_hint)
             if not text:
                 raise RuntimeError("No speech was detected. Please speak closer to the microphone and try again.")
-            return Transcript(text=text, language=(language_hint or "hi-IN"), confidence=0.9)
+            return Transcript(
+                text=text,
+                language=(language_hint or "hi-IN"),
+                confidence=0.9,
+                duration_seconds=timings.get("duration_s", 0.0),
+                timings=timings
+            )
         finally:
             try:
                 os.unlink(temp_path)
             except OSError:
                 pass
+
+    async def transcribe_async(self, audio: bytes, filename: str = "audio.wav", language_hint: str | None = None) -> Transcript:
+        return await asyncio.to_thread(self.transcribe, audio, filename, language_hint)
 
 
 class LocalStubLLMClient:
@@ -341,6 +564,9 @@ class LocalStubLLMClient:
                 return schema(**base_data)
             except Exception:
                 return schema.model_validate({})
+
+    async def complete_async(self, system: str, user: str, schema: type[T]) -> T:
+        return self.complete(system, user, schema)
 
 
 def get_speech_client() -> SpeechClient:
