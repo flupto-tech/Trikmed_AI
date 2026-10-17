@@ -5,6 +5,9 @@ import json
 from pathlib import Path
 import re
 from typing import Any
+from concurrent.futures import ThreadPoolExecutor
+
+_log_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="drug_val_log")
 from rapidfuzz import fuzz, process
 
 from app.core.config import load_environment
@@ -140,26 +143,30 @@ class DrugValidator:
         # Enrich in-memory entry with a timestamp so callers can rely on created_at
         entry = {**result, "created_at": result.get("created_at") or datetime.now(timezone.utc).isoformat()}
         self.validation_logs.append(entry)
-        # Durable persistence of non-sensitive validation event (Fix 6b)
-        try:
-            import os
-            from app.core.config import load_environment
-            load_environment()
-            if os.getenv("TRIKMED_DEMO_MODE", "").lower() != "true":
-                from app.api.dependencies.auth import store
-                if hasattr(store, "_insert") and not getattr(store, "_is_demo", True):
-                    log_row = {
-                        "spoken_name": entry.get("spoken_name") or entry.get("raw_name") or "",
-                        "matched_name": entry.get("matched_name"),
-                        "score": float(entry.get("score") or entry.get("validation_score") or 0.0),
-                        "band": entry.get("band") or entry.get("validation_band") or "red",
-                        "reason": entry.get("reason") or entry.get("validation_reason") or "",
-                        "created_at": entry["created_at"],
-                    }
-                    store._insert("drug_validation_log", log_row)
-        except Exception:
-            # Durable logging failure must never break or delay prescription flow
-            pass
+        
+        # Offload durable persistence to worker thread so database I/O does not delay the response
+        def _persist() -> None:
+            try:
+                import os
+                from app.core.config import load_environment
+                load_environment()
+                if os.getenv("TRIKMED_DEMO_MODE", "").lower() != "true":
+                    from app.api.dependencies.auth import store
+                    if hasattr(store, "_insert") and not getattr(store, "_is_demo", True):
+                        log_row = {
+                            "spoken_name": entry.get("spoken_name") or entry.get("raw_name") or "",
+                            "matched_name": entry.get("matched_name"),
+                            "score": float(entry.get("score") or entry.get("validation_score") or 0.0),
+                            "band": entry.get("band") or entry.get("validation_band") or "red",
+                            "reason": entry.get("reason") or entry.get("validation_reason") or "",
+                            "created_at": entry["created_at"],
+                        }
+                        store._insert("drug_validation_log", log_row)
+            except Exception:
+                # Durable logging failure must never break or delay prescription flow
+                pass
+
+        _log_executor.submit(_persist)
 
 
 drug_validator = DrugValidator()

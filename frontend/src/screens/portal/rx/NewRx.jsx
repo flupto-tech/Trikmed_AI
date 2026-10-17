@@ -552,25 +552,40 @@ export default function NewRx({ doctorId='dr001' }) {
 
   // ── instructions ────────────────────────────────────────────────────────────
   // ── AI Voice Dictation Handler ──────────────────────────────────────────
-  function handleAiPrescriptionParsed(parsedRx) {
+  // ── AI Voice Dictation Handlers (Incremental + Reconciled Final) ────────
+  function normalizeDrugName(name) {
+    return (name || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+  }
+
+  function applyVoicePrescription(parsedRx, isFinal = false) {
     if (!parsedRx) return
+
+    // 1. Symptoms: union without duplicates
     if (parsedRx.symptoms?.length) {
       setSymptoms(prev => [...new Set([...prev, ...parsedRx.symptoms])])
     }
+
+    // 2. Diagnosis: union without duplicates
     if (parsedRx.diagnosis) {
       const diagArr = Array.isArray(parsedRx.diagnosis) ? parsedRx.diagnosis : [parsedRx.diagnosis]
       setDiagnosis(prev => [...new Set([...prev, ...diagArr.filter(Boolean)])])
     }
+
+    // 3. Medicines: Intelligent reconciliation & deduplication
+    // - Never overwrite doctor_confirmed medicines or manual medicines (isCustom)
+    // - Matches by normalized spoken or brand name
+    // - Updates existing interim entry with refined doses / timing / CDCI validation
+    // - Adds new medicines safely
     if (parsedRx.medicines?.length) {
-      const formattedMeds = parsedRx.medicines.map((m, idx) => ({
+      const formattedIncoming = parsedRx.medicines.map((m, idx) => ({
         id: `ai-med-${Date.now()}-${idx}`,
         brandName: m.name || m.spoken_name || m.raw_name || '',
-        genericName: m.generic_name || '',
+        genericName: m.generic_name || m.proposed_generic_name || '',
         strength: m.dose || '',
         strengths: m.dose ? [m.dose] : [],
-        form: m.form || 'Tablet',
-        dosage: m.frequency || `${m.morning?1:0}-${m.afternoon?1:0}-${m.night?1:0}`,
-        timing: m.timing || (m.after_food === true ? 'After food' : m.after_food === false ? 'Before food' : ''),
+        form: m.form || '',
+        dosage: m.frequency || ((m.morning !== null && m.morning !== undefined) || (m.afternoon !== null && m.afternoon !== undefined) || (m.night !== null && m.night !== undefined) ? `${m.morning?1:0}-${m.afternoon?1:0}-${m.night?1:0}` : ''),
+        timing: m.timing || (m.after_food === true ? 'After food' : (m.after_food === false || m.before_food === true) ? 'Before food' : ''),
         duration: m.duration || '',
         notes: m.notes || '',
         validation_band: m.validation_band || 'red',
@@ -579,33 +594,100 @@ export default function NewRx({ doctorId='dr001' }) {
         validation_score: m.validation_score,
         candidates: m.candidates || [],
         options: m.options || [],
-        doctor_confirmed: m.validation_band === 'green' ? true : false,
+        doctor_confirmed: false,
+        isInterim: !isFinal,
+        isAiGenerated: true,
       }))
-      setMedicines(prev => [...prev, ...formattedMeds])
+
+      setMedicines(prev => {
+        let updated = [...prev]
+
+        formattedIncoming.forEach(incoming => {
+          const incKey = normalizeDrugName(incoming.brandName || incoming.genericName)
+          if (!incKey) return
+
+          // Look for an existing match in the list
+          const matchIndex = updated.findIndex(existing => {
+            if (existing.doctor_confirmed) return false // never overwrite confirmed
+            const exKey = normalizeDrugName(existing.brandName || existing.genericName)
+            return exKey && (exKey === incKey || exKey.includes(incKey) || incKey.includes(exKey))
+          })
+
+          if (matchIndex >= 0) {
+            // Replace / update interim entry with newer extraction or reconciled final data
+            const existing = updated[matchIndex]
+            updated[matchIndex] = {
+              ...existing,
+              brandName: incoming.brandName || existing.brandName,
+              genericName: incoming.genericName || existing.genericName,
+              strength: incoming.strength || existing.strength,
+              strengths: incoming.strengths.length ? incoming.strengths : existing.strengths,
+              form: incoming.form || existing.form,
+              dosage: incoming.dosage || existing.dosage,
+              timing: incoming.timing || existing.timing,
+              duration: incoming.duration || existing.duration,
+              validation_band: incoming.validation_band || existing.validation_band,
+              validation_status: incoming.validation_status || existing.validation_status,
+              matched_name: incoming.matched_name || existing.matched_name,
+              validation_score: incoming.validation_score ?? existing.validation_score,
+              isInterim: !isFinal,
+            }
+          } else {
+            // New medicine: append to list
+            updated.push(incoming)
+          }
+        })
+
+        // If this is the final reconciliation pass, mark all remaining AI items as no longer interim
+        if (isFinal) {
+          updated = updated.map(m => m.isInterim ? { ...m, isInterim: false } : m)
+        }
+
+        return updated
+      })
     }
+
+    // 4. Lab Investigations: match against common tests
     if (parsedRx.investigations?.length) {
       const matchedTests = parsedRx.investigations.map(inv => {
+        const invStr = typeof inv === 'string' ? inv : (inv.spoken_name || inv.matched_name || '')
         const found = COMMON_TESTS.find(t => 
-          t.toLowerCase() === inv.toLowerCase() || 
-          t.toLowerCase().startsWith(inv.toLowerCase()) || 
-          inv.toLowerCase().includes(t.toLowerCase().split(' ')[0])
+          t.toLowerCase() === invStr.toLowerCase() || 
+          t.toLowerCase().startsWith(invStr.toLowerCase()) || 
+          invStr.toLowerCase().includes(t.toLowerCase().split(' ')[0])
         )
-        return found || inv
-      })
+        return found || invStr
+      }).filter(Boolean)
       setTests(prev => [...new Set([...prev, ...matchedTests])])
     }
+
+    // 5. Instruction tags & advice
     if (parsedRx.instruction_tags?.length || parsedRx.instructionTags?.length || parsedRx.advice?.length || Array.isArray(parsedRx.instructions)) {
       const tags = [...(parsedRx.instruction_tags || parsedRx.instructionTags || (Array.isArray(parsedRx.instructions) ? parsedRx.instructions : [])), ...(parsedRx.advice || [])]
       if (tags.length) {
         setInstructionTags(prev => [...new Set([...prev, ...tags])])
       }
     }
+
+    // 6. Follow up
     if (parsedRx.follow_up?.length) {
       setFollowUp(Array.isArray(parsedRx.follow_up) ? parsedRx.follow_up[0] : parsedRx.follow_up)
     }
+
+    // 7. Notes
     if (parsedRx.notes) {
       setInstructionFreeText(prev => prev ? `${prev}. ${parsedRx.notes}` : parsedRx.notes)
     }
+  }
+
+  // Progressive live updates while doctor is dictating
+  function handleIncrementalVoiceUpdate(parsedRx) {
+    applyVoicePrescription(parsedRx, false)
+  }
+
+  // Authoritative reconciliation pass when recording stops
+  function handleAiPrescriptionParsed(parsedRx) {
+    applyVoicePrescription(parsedRx, true)
   }
 
   // ── build & save ─────────────────────────────────────────────────────────────
@@ -816,6 +898,7 @@ export default function NewRx({ doctorId='dr001' }) {
             patientName={patient?.name}
             patientAge={patient?.age}
             doctorName={clinic?.doctors?.find(d => d.id === doctorId)?.name || 'Doctor'}
+            onIncrementalUpdate={handleIncrementalVoiceUpdate}
             onPrescriptionParsed={handleAiPrescriptionParsed}
             onTranscript={(text) => {
               if (text && !symptomText) setSymptomText(text)
