@@ -189,3 +189,58 @@ def test_voice_to_prescription_backward_compatibility(monkeypatch):
     assert res["medicines"][0]["spoken_name"] == "paracetamol"
     assert "timings" in res
     assert "total_response_ms" in res["timings"]
+
+
+def test_voice_to_prescription_reuses_transcript_without_calling_transcribe(monkeypatch):
+    """When a transcript is supplied, voice_to_prescription uses it immediately and avoids audio transcription."""
+    transcribe_called = False
+
+    async def fake_transcribe(*args, **kwargs):
+        nonlocal transcribe_called
+        transcribe_called = True
+        return {"text": "unexpected server text", "latency_ms": 100.0}
+
+    monkeypatch.setattr(ai, "transcribe_audio", fake_transcribe)
+    monkeypatch.setattr(ai, "get_llm_client", lambda: StubIncrementalLLM())
+
+    from io import BytesIO
+    from fastapi import UploadFile
+    fake_audio = UploadFile(filename="test.webm", file=BytesIO(b"fake audio bytes"))
+
+    res = asyncio.run(ai.voice_to_prescription(
+        file=fake_audio,
+        transcript="paracetamol 500 subah shaam khane ke baad",
+    ))
+
+    # transcribe_audio must NOT be called when transcript is provided
+    assert transcribe_called is False
+    assert len(res["medicines"]) == 1
+    assert res["medicines"][0]["spoken_name"] == "paracetamol"
+
+
+def test_voice_to_prescription_whisper_fallback_when_transcript_missing(monkeypatch):
+    """When transcript is missing/empty, audio transcription is invoked as safe fallback."""
+    transcribe_called = False
+
+    async def fake_transcribe(*args, **kwargs):
+        nonlocal transcribe_called
+        transcribe_called = True
+        return {"text": "amoxicillin 500 din mein teen baar 5 din tak", "latency_ms": 250.0, "audio_conversion_ms": 20.0}
+
+    monkeypatch.setattr(ai, "transcribe_audio", fake_transcribe)
+    monkeypatch.setattr(ai, "get_llm_client", lambda: StubIncrementalLLM())
+
+    from io import BytesIO
+    from fastapi import UploadFile
+    fake_audio = UploadFile(filename="test.webm", file=BytesIO(b"fake audio bytes"))
+
+    res = asyncio.run(ai.voice_to_prescription(
+        file=fake_audio,
+        transcript="",
+    ))
+
+    # transcribe_audio MUST be called when transcript is absent
+    assert transcribe_called is True
+    assert len(res["medicines"]) == 1
+    assert res["medicines"][0]["spoken_name"] == "amoxicillin"
+
