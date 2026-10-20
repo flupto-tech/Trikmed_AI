@@ -343,12 +343,14 @@ class GeminiLLMClient:
         if not self.api_key:
             raise RuntimeError("GEMINI_API_KEY is not configured")
 
-        models_to_try = [
-            os.getenv("GEMINI_MODEL", "gemini-flash-latest"),
-            "gemini-flash-latest",
-            "gemini-3.8-flash",
+        # Prioritize low-latency high-throughput models (gemini-3.1-flash-lite) for <3s structuring latency
+        configured_model = os.getenv("GEMINI_MODEL")
+        models_to_try = [m for m in [
+            configured_model,
             "gemini-3.1-flash-lite",
-        ]
+            "gemini-3.8-flash",
+            "gemini-flash-latest",
+        ] if m]
 
         json_schema = json.dumps(schema.model_json_schema(), indent=2)
         system_prompt = f"{system}\n\nYou must respond strictly with a valid JSON object adhering to this JSON Schema:\n{json_schema}"
@@ -419,12 +421,14 @@ class GeminiLLMClient:
         if not self.api_key:
             raise RuntimeError("GEMINI_API_KEY is not configured")
 
-        models_to_try = [
-            os.getenv("GEMINI_MODEL", "gemini-flash-latest"),
-            "gemini-flash-latest",
-            "gemini-3.8-flash",
+        # Prioritize low-latency high-throughput models (gemini-3.1-flash-lite) for <3s structuring latency
+        configured_model = os.getenv("GEMINI_MODEL")
+        models_to_try = [m for m in [
+            configured_model,
             "gemini-3.1-flash-lite",
-        ]
+            "gemini-3.8-flash",
+            "gemini-flash-latest",
+        ] if m]
 
         json_schema = json.dumps(schema.model_json_schema(), indent=2)
         system_prompt = f"{system}\n\nYou must respond strictly with a valid JSON object adhering to this JSON Schema:\n{json_schema}"

@@ -61,42 +61,34 @@ class StructureRequest(BaseModel):
 
 
 def _build_system_prompt() -> str:
-    """Build a grounded system prompt with Hinglish clinical rules and WHO ATC drug list."""
-    # No drug list in the prompt: the model extracts what was spoken; CDCI validation decides.
-    return f"""You are a clinical AI prescription structuring assistant for Indian clinics.
-You convert doctor audio dictations (which frequently code-switch between Hindi, English, and Hinglish) into clean, standard structured JSON prescriptions.
+    """Build a fast, grounded system prompt with Hinglish clinical rules."""
+    return """You are a clinical AI prescription structuring assistant for Indian clinics.
+Extract structured prescription details from doctor dictation (English/Hindi/Hinglish).
 
-HINGLISH & CLINICAL COMPREHENSION RULES:
-1. CODE-SWITCHED HINGLISH DOSAGE FREQUENCY MAPPINGS:
-   - "subah shaam" / "din mein do baar" / "do time" -> frequency: "1-0-1", morning: true, afternoon: false, night: true
-   - "din mein teen baar" / "subah dopahar raat" / "teen time" -> frequency: "1-1-1", morning: true, afternoon: true, night: true
-   - "sirf subah" / "roz subah ek baar" -> frequency: "1-0-0", morning: true, afternoon: false, night: false
-   - "sirf raat ko" / "sote waqt" / "raat mein ek" -> frequency: "0-0-1", morning: false, afternoon: false, night: true
-   - "dopahar ko" -> frequency: "0-1-0", morning: false, afternoon: true, night: false
-   - "zaroorat padne par" / "jab dard ho tabhi" / "sos" -> frequency: "SOS", morning: false, afternoon: false, night: false
+RULES:
+1. DOSAGE FREQUENCY:
+   - "subah shaam" / "do baar" -> frequency: "1-0-1", morning: true, night: true
+   - "teen baar" / "subah dopahar raat" -> frequency: "1-1-1", morning: true, afternoon: true, night: true
+   - "sirf subah" -> frequency: "1-0-0", morning: true
+   - "sirf raat ko" / "sote waqt" -> frequency: "0-0-1", night: true
+   - "dopahar ko" -> frequency: "0-1-0", afternoon: true
+   - "zaroorat padne par" / "sos" -> frequency: "SOS"
 
-2. FOOD TIMING RULES:
-   - "khana khane ke baad" / "nashte ke baad" / "khana kha kar" -> after_food: true, before_food: false
-   - "khali pet" / "bhookhe pet" / "khana khane se pehle" / "subah khali pet" -> before_food: true, after_food: false
+2. FOOD TIMING:
+   - "khana khane ke baad" / "nashte ke baad" -> after_food: true, before_food: false
+   - "khali pet" / "khana khane se pehle" -> before_food: true, after_food: false
 
-3. DURATION & FOLLOW-UP MAPPINGS:
-   - "teen din" / "3 din tak" -> duration: "3 days"
-   - "paanch din" / "5 din tak" -> duration: "5 days"
-   - "ek hafta" / "saat din" -> duration: "1 week" / "7 days"
+3. DURATION:
+   - "teen din" -> "3 days"; "paanch din" -> "5 days"; "ek hafta" -> "1 week"
 
-4. MULTIPLE MEDICINES & TESTS (STRICT RULE):
-   - You MUST separate every medicine and every lab test into independent entries.
-   - Example Input: "Dolo 650 subah shaam khane ke baad, Augmentin 625 din mein do baar five days, Pan 40 breakfast se pehle"
-   - Must produce THREE separate medicine objects. NEVER combine them.
-   - Example Input: "CBC, fasting sugar aur lipid profile"
-   - Must produce THREE separate investigation strings in the array. NEVER combine them.
+4. MULTIPLE MEDICINES & TESTS:
+   - Separate every medicine into its own object.
+   - Separate every lab test into independent entries in investigations array.
 
-5. NO HALLUCINATION (CORE SAFETY RULE):
-   - You are an EXTRACTOR, not a medical authority. Extract only information explicitly supported by the transcript.
-   - NEVER invent, infer, substitute, or normalize a medicine/test into a different entity. Preserve uncertain terms verbatim in spoken_name.
-   - Never invent a dose, frequency, duration, diagnosis, test, advice, or follow-up. Use null/empty arrays when absent.
-   - Medicines must include the exact spoken_name.
-"""
+5. SAFETY:
+   - Extract ONLY what is explicitly stated in the transcript.
+   - NEVER invent, substitute, or guess a medicine, strength, dose, duration, or diagnosis.
+   - Keep spoken drug names in spoken_name verbatim."""
 
 
 @router.post("/transcribe")
@@ -350,7 +342,11 @@ async def voice_to_prescription(
     transcribe_latency = 0.0
     audio_conversion_latency = 0.0
 
-    if file:
+    # If an accumulated transcript is provided from the recording session, reuse it directly
+    # to avoid a 15-30s local Whisper audio transcription delay.
+    # If no transcript is provided (e.g. mobile audio-only upload or browser SpeechRecognition unavailable),
+    # fall back to transcribing the audio file using Whisper.
+    if file and not transcript_text:
         try:
             transcribe_res = await transcribe_audio(file=file, language_hint=language_hint)
             server_text = transcribe_res.get("text", "").strip()
@@ -359,8 +355,11 @@ async def voice_to_prescription(
                 transcribe_latency = transcribe_res.get("latency_ms", 0.0)
                 audio_conversion_latency = transcribe_res.get("audio_conversion_ms", 0.0)
         except Exception as e:
-            if not transcript_text:
-                raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+    elif file and transcript_text:
+        # Transcript provided; audio file kept for audit/reconciliation without blocking draft
+        audio_conversion_latency = 0.0
+        transcribe_latency = 0.0
 
     if not transcript_text:
         raise HTTPException(status_code=400, detail="No speech or transcript was detected. Please try again.")
